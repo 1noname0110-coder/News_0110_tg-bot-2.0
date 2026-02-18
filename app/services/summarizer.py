@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -86,36 +87,36 @@ class DigestSummarizer:
         return {"title": title, "body": body}
 
     def _build_extractive(self, period_type: str, news: list[RawNews], source_breakdown: dict[str, int]) -> DigestOutput:
-        cap = 12 if period_type == "daily" else 15
+        default_cap = 12 if period_type == "daily" else 15
         min_items = 5 if period_type == "daily" else 7
+        cap = len(news) if self.settings.publish_all_important else default_cap
         per_topic_limit = self.settings.per_topic_limit_daily if period_type == "daily" else self.settings.per_topic_limit_weekly
 
         deduped = self._deduplicate(news)
 
+        scored_items = [(n, self.filter.evaluate(n.title, n.summary)) for n in deduped]
         ranked = sorted(
-            deduped,
-            key=lambda n: (self.filter.evaluate(n.title, n.summary).score, len(n.summary), n.published_at),
+            scored_items,
+            key=lambda item: (item[1].score, len(item[0].summary), item[0].published_at),
             reverse=True,
         )
 
         topic_count: dict[str, int] = defaultdict(int)
         selected: list[tuple[RawNews, str]] = []
-        for item in ranked:
-            topic = self.filter.evaluate(item.title, item.summary).topic
-            if topic_count[topic] >= per_topic_limit:
+        for item, result in ranked:
+            if topic_count[result.topic] >= per_topic_limit:
                 continue
-            selected.append((item, topic))
-            topic_count[topic] += 1
+            selected.append((item, result.topic))
+            topic_count[result.topic] += 1
             if len(selected) >= cap:
                 break
 
         if len(selected) < min_items:
-            for item in ranked:
+            for item, result in ranked:
                 if any(item.id == chosen.id for chosen, _ in selected):
                     continue
-                topic = self.filter.evaluate(item.title, item.summary).topic
-                selected.append((item, topic))
-                if len(selected) >= min_items:
+                selected.append((item, result.topic))
+                if len(selected) >= min(min_items, len(ranked)):
                     break
 
         title = "Итоги дня: политика и экономика" if period_type == "daily" else "Итоги недели: ключевые изменения"
@@ -125,7 +126,12 @@ class DigestSummarizer:
         for idx, (item, topic) in enumerate(selected, 1):
             topic_breakdown[topic] += 1
             snippet = self._make_dry_snippet(item.summary)
-            lines.append(f"{idx}) [{self._topic_ru(topic)}] {item.title}\n{snippet}")
+            safe_title = html.escape(item.title)
+            safe_snippet = html.escape(snippet)
+            safe_url = html.escape(item.url, quote=True)
+            lines.append(
+                f"{idx}) [{self._topic_ru(topic)}] {safe_title}\n{safe_snippet}\n<a href=\"{safe_url}\">Источник</a>"
+            )
 
         return DigestOutput(
             title=title,

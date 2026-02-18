@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     dedup_similarity_threshold: float = Field(default=0.82, alias="DEDUP_SIMILARITY_THRESHOLD")
     per_topic_limit_daily: int = Field(default=3, alias="PER_TOPIC_LIMIT_DAILY")
     per_topic_limit_weekly: int = Field(default=4, alias="PER_TOPIC_LIMIT_WEEKLY")
+    publish_all_important: bool = Field(default=True, alias="PUBLISH_ALL_IMPORTANT")
 
     @property
     def admin_ids(self) -> set[int]:

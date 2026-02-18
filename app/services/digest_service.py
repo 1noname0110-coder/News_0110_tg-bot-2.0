@@ -15,6 +15,8 @@ from app.services.summarizer import DigestSummarizer
 
 
 class DigestService:
+    TELEGRAM_MAX_CHARS = 3900
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.collector = NewsCollector(settings)
@@ -79,8 +81,7 @@ class DigestService:
         quality_metrics["rejected_total"] = len(raw_items) - len(accepted)
         quality_metrics["rejection_reasons"] = dict(rejection_reasons)
 
-        message = f"{digest.title}\n\n{digest.body}"
-        await bot.send_message(chat_id=self.settings.channel_id, text=message)
+        await self._send_digest_messages(bot, digest.title, digest.body)
 
         await news_repo.publish_digest(
             period_type=period_type,
@@ -93,3 +94,38 @@ class DigestService:
             topic_breakdown=digest.topic_breakdown,
             quality_metrics=quality_metrics,
         )
+
+    async def _send_digest_messages(self, bot: Bot, title: str, body: str) -> None:
+        chunks = self._split_body(body)
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, 1):
+            header = f"{title}\n\n" if idx == 1 else f"{title} (продолжение {idx}/{total})\n\n"
+            await bot.send_message(chat_id=self.settings.channel_id, text=header + chunk)
+
+    def _split_body(self, body: str) -> list[str]:
+        if len(body) <= self.TELEGRAM_MAX_CHARS:
+            return [body]
+
+        sections = body.split("\n\n")
+        chunks: list[str] = []
+        current = ""
+
+        for section in sections:
+            candidate = section if not current else f"{current}\n\n{section}"
+            if len(candidate) <= self.TELEGRAM_MAX_CHARS:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                if len(section) <= self.TELEGRAM_MAX_CHARS:
+                    current = section
+                else:
+                    start = 0
+                    while start < len(section):
+                        part = section[start : start + self.TELEGRAM_MAX_CHARS]
+                        chunks.append(part)
+                        start += self.TELEGRAM_MAX_CHARS
+                    current = ""
+        if current:
+            chunks.append(current)
+        return chunks or [body[: self.TELEGRAM_MAX_CHARS]]

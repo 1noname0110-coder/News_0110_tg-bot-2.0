@@ -29,3 +29,12 @@ def test_rejects_tactical_conflict_details() -> None:
     assert not result.accepted
     assert "тактические детали" in result.reason
     assert result.topic == "conflict"
+
+
+def test_rejects_lifestyle_news() -> None:
+    f = NewsFilter()
+    result = f.evaluate(
+        "Гериатр Минздрава рассказала об алгоритмах сохранения молодости",
+        "Ими являются изучение новой информации и принципиально новые занятия.",
+    )
+    assert not result.accepted
