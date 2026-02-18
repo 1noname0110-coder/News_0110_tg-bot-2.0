@@ -79,6 +79,40 @@ LLM_API_KEY=
 python -m app.main
 ```
 
+### Запуск без Docker
+
+Рекомендуемый способ запуска (чтобы корректно работали импорты пакета `app`):
+
+```bash
+python -m app.main
+```
+
+Запуск `python app/main.py` также поддержан в коде как fallback, но в проде лучше использовать модульный запуск.
+
+## Деплой через Docker
+
+В репозитории есть готовый `Dockerfile`.
+
+Сборка образа:
+
+```bash
+docker build -t news-digest-bot .
+```
+
+Запуск контейнера:
+
+```bash
+docker run -d --name news-digest-bot --restart unless-stopped --env-file .env news-digest-bot
+```
+
+В контейнере бот запускается командой:
+
+```bash
+python -m app.main
+```
+
+Это устраняет ошибку `ModuleNotFoundError: No module named app`, которая возникает при запуске файла напрямую как `/app/app/main.py` на некоторых хостингах.
+
 ## Планировщик
 
 - Сбор источников: каждые 30 минут.

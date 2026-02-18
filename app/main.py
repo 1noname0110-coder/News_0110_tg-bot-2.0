@@ -1,5 +1,11 @@
 import asyncio
 import logging
+import pathlib
+import sys
+
+if __package__ in {None, ""}:
+    # Поддержка запуска как файла: python app/main.py
+    sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from app.bot import create_bot, create_dispatcher
 from app.config import get_settings
