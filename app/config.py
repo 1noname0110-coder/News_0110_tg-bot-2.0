@@ -7,8 +7,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str = Field(alias="BOT_TOKEN")
-    channel_id: str = Field(alias="CHANNEL_ID")
-    admin_user_ids: str = Field(default="", alias="ADMIN_USER_IDS")
+    channel_id: str = Field(alias="-1003531603514")
+    admin_user_ids: str = Field(default="", alias="5322247321")
 
     database_url: str = Field(default="sqlite+aiosqlite:///./news_bot.db", alias="DATABASE_URL")
     timezone: str = Field(default="Asia/Vladivostok", alias="TIMEZONE")
