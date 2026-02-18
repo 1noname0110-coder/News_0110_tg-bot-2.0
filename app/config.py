@@ -1,5 +1,8 @@
+import re
 from functools import lru_cache
-from pydantic import Field
+from typing import Any
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,8 +10,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str = Field(alias="BOT_TOKEN")
-    channel_id: str = Field(alias="-1003531603514")
-    admin_user_ids: str = Field(default="", alias="5322247321")
+    channel_id: str = Field(default="-1003531603514", alias="CHANNEL_ID")
+    admin_user_ids: str = Field(default="5322247321", alias="ADMIN_USER_IDS")
 
     database_url: str = Field(default="sqlite+aiosqlite:///./news_bot.db", alias="DATABASE_URL")
     timezone: str = Field(default="Asia/Vladivostok", alias="TIMEZONE")
@@ -27,6 +30,40 @@ class Settings(BaseSettings):
     per_topic_limit_daily: int = Field(default=3, alias="PER_TOPIC_LIMIT_DAILY")
     per_topic_limit_weekly: int = Field(default=4, alias="PER_TOPIC_LIMIT_WEEKLY")
     publish_all_important: bool = Field(default=True, alias="PUBLISH_ALL_IMPORTANT")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_channel_id(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        if data.get("CHANNEL_ID"):
+            return data
+
+        for alt_key in ("CHAT_ID", "TELEGRAM_CHANNEL_ID"):
+            if data.get(alt_key):
+                data["CHANNEL_ID"] = str(data[alt_key]).strip()
+                return data
+
+        malformed_key = next(
+            (
+                key
+                for key in data.keys()
+                if isinstance(key, str) and re.fullmatch(r"-100\d{5,}", key)
+            ),
+            None,
+        )
+        if malformed_key:
+            data["CHANNEL_ID"] = malformed_key
+        return data
+
+    @model_validator(mode="after")
+    def ensure_required_runtime_values(self) -> "Settings":
+        if not self.channel_id.strip():
+            raise ValueError(
+                "CHANNEL_ID не задан. Укажите CHANNEL_ID, CHAT_ID или TELEGRAM_CHANNEL_ID в переменных окружения."
+            )
+        return self
 
     @property
     def admin_ids(self) -> set[int]:

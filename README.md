@@ -54,6 +54,7 @@ cp .env.example .env
 
 - `BOT_TOKEN` — токен бота.
 - `CHANNEL_ID` — id канала (`@channel_name` или числовой id).
+  - также поддержаны `CHAT_ID` и `TELEGRAM_CHANNEL_ID` как альтернативные имена переменной.
 - `ADMIN_USER_IDS` — Telegram user id админов через запятую.
 - `DATABASE_URL`:
   - SQLite: `sqlite+aiosqlite:///./news_bot.db`
@@ -112,6 +113,8 @@ python -m app.main
 ```
 
 Это устраняет ошибку `ModuleNotFoundError: No module named app`, которая возникает при запуске файла напрямую как `/app/app/main.py` на некоторых хостингах.
+
+Если в панели хостинга случайно указали ID канала как имя переменной (например, ключ `-100...`), бот теперь автоматически распознает это и подставит как `CHANNEL_ID`.
 
 ## Планировщик
 
