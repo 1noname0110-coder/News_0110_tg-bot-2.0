@@ -62,6 +62,7 @@ cp .env.example .env
 - `DEDUP_SIMILARITY_THRESHOLD` — порог похожести заголовков (0..1).
 - `PER_TOPIC_LIMIT_DAILY` / `PER_TOPIC_LIMIT_WEEKLY` — лимиты пунктов по теме.
 - `PUBLISH_ALL_IMPORTANT` — публиковать все важные новости (если `true`) или ограничивать размер одной сводки (если `false`).
+- `MAX_PERIOD_NEWS_DAILY` / `MAX_PERIOD_NEWS_WEEKLY` — ограничение числа новостей, загружаемых из БД за период для сборки сводки (защита от роста потребления RAM).
 
 ### Полностью бесплатный режим
 

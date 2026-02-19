@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import re
+import warnings
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from html import unescape
 
 import feedparser
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 
 from app.config import Settings
 from app.models import Source
@@ -123,4 +126,11 @@ class NewsCollector:
 
     @staticmethod
     def _strip_html(value: str) -> str:
-        return BeautifulSoup(value or "", "html.parser").get_text(" ", strip=True)
+        raw = value or ""
+        if "<" not in raw and ">" not in raw:
+            return re.sub(r"\s+", " ", unescape(raw)).strip()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", MarkupResemblesLocatorWarning)
+            text = BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
+        return re.sub(r"\s+", " ", text).strip()

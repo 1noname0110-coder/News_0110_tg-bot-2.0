@@ -45,7 +45,12 @@ async def add_source(message: Message, settings: Settings) -> None:
     async with AsyncSessionLocal() as session:
         repo = SourceRepository(session)
         source = await repo.create(source_type=source_type, name=name, url=url, meta=meta)
-        await message.answer(f"Источник добавлен: #{source.id} {source.name} ({source.type})")
+
+    if not source:
+        await message.answer("Источник с таким именем уже существует.")
+        return
+
+    await message.answer(f"Источник добавлен: #{source.id} {source.name} ({source.type})")
 
 
 @router.message(Command("removesource"))
