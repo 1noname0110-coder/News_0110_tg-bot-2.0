@@ -23,10 +23,14 @@ class SourceRepository:
         result = await self.session.execute(select(Source).order_by(Source.id.asc()))
         return list(result.scalars().all())
 
-    async def create(self, source_type: str, name: str, url: str, meta: dict | None = None) -> Source:
+    async def create(self, source_type: str, name: str, url: str, meta: dict | None = None) -> Source | None:
         source = Source(type=source_type, name=name, url=url, meta=meta or {})
         self.session.add(source)
-        await self.session.commit()
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            return None
         await self.session.refresh(source)
         return source
 
