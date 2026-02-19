@@ -57,10 +57,16 @@ class NewsRepository:
         await self.session.commit()
         return stored
 
-    async def fetch_period_news(self, start_dt: datetime, end_dt: datetime) -> list[RawNews]:
-        result = await self.session.execute(
-            select(RawNews).where(and_(RawNews.published_at >= start_dt, RawNews.published_at <= end_dt))
+    async def fetch_period_news(self, start_dt: datetime, end_dt: datetime, limit: int | None = None) -> list[RawNews]:
+        query = (
+            select(RawNews)
+            .where(and_(RawNews.published_at >= start_dt, RawNews.published_at <= end_dt))
+            .order_by(RawNews.published_at.desc(), RawNews.id.desc())
         )
+        if limit and limit > 0:
+            query = query.limit(limit)
+
+        result = await self.session.execute(query)
         return list(result.scalars().all())
 
     async def reject(self, raw_news_id: int, source_id: int, reason: str) -> None:

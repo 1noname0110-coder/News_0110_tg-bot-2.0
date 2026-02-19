@@ -62,7 +62,8 @@ class DigestService:
     async def _publish_period(self, bot: Bot, session: AsyncSession, period_type: str, start_dt: datetime, end_dt: datetime) -> None:
         news_repo = NewsRepository(session)
 
-        raw_items = await news_repo.fetch_period_news(start_dt, end_dt)
+        period_limit = self.settings.max_period_news_daily if period_type == "daily" else self.settings.max_period_news_weekly
+        raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
         accepted = []
         rejection_reasons = Counter()
 

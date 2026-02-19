@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     per_topic_limit_daily: int = Field(default=3, alias="PER_TOPIC_LIMIT_DAILY")
     per_topic_limit_weekly: int = Field(default=4, alias="PER_TOPIC_LIMIT_WEEKLY")
     publish_all_important: bool = Field(default=True, alias="PUBLISH_ALL_IMPORTANT")
+    max_period_news_daily: int = Field(default=350, alias="MAX_PERIOD_NEWS_DAILY")
+    max_period_news_weekly: int = Field(default=800, alias="MAX_PERIOD_NEWS_WEEKLY")
 
     @model_validator(mode="before")
     @classmethod
