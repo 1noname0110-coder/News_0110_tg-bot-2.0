@@ -164,14 +164,23 @@ async def quality(message: Message, settings: Settings) -> None:
     topics = [f"{k}: {v}" for k, v in sorted(topic_dist.items(), key=lambda x: x[1], reverse=True)] or ["Нет"]
     reasons = [f"{k}: {v}" for k, v in sorted(reject_reasons.items(), key=lambda x: x[1], reverse=True)] or ["Нет"]
 
+    fetched_from_db = int(qm.get("fetched_from_db_total", qm.get("raw_total", 0)))
+    rejected_by_filter = int(qm.get("rejected_by_filter_total", qm.get("rejected_total", 0)))
+    removed_as_duplicates = int(qm.get("removed_as_duplicates_total", qm.get("duplicates_removed_total", 0)))
+    removed_by_topic_limit = int(qm.get("removed_by_topic_limit_total", 0))
+    published_items = int(qm.get("published_items_total", qm.get("selected_total", 0)))
+
     text = (
         f"Качество сводки за {today:%d.%m.%Y}\n"
-        f"Raw новостей: {qm.get('raw_total', 0)}\n"
-        f"Отклонено: {qm.get('rejected_total', 0)}\n"
+        f"Воронка отбора:\n"
+        f"1) Загружено из БД: {fetched_from_db}\n"
+        f"2) Отброшено фильтром: {rejected_by_filter}\n"
+        f"3) Удалено как дубликаты: {removed_as_duplicates}\n"
+        f"4) Снято из-за лимита по теме: {removed_by_topic_limit}\n"
+        f"5) Опубликовано пунктов: {published_items}\n\n"
+        f"Acceptance rate: {qm.get('acceptance_rate', 0):.0%}\n"
         f"После дедупликации: {qm.get('deduplicated_total', 0)}\n"
-        f"Опубликовано пунктов: {qm.get('selected_total', 0)}\n"
-        f"Удалено дублей: {qm.get('duplicates_removed_total', 0)}\n"
-        f"Acceptance rate: {qm.get('acceptance_rate', 0):.0%}\n\n"
+        f"Выбрано всего: {qm.get('selected_total', 0)}\n\n"
         f"Распределение тем:\n" + "\n".join(topics) + "\n\n"
         f"Причины отклонений:\n" + "\n".join(reasons)
     )

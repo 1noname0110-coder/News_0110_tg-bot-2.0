@@ -44,56 +44,20 @@ def test_extractive_deduplicates_and_balances_topics() -> None:
     assert "Источник</a>" in digest.body
 
 
-def test_extractive_publish_all_important_selects_all_deduplicated() -> None:
+def test_extractive_reports_removed_by_topic_limit() -> None:
     settings = _settings()
-    settings.publish_all_important = True
     settings.per_topic_limit_daily = 1
     s = DigestSummarizer(settings)
 
     base = datetime(2024, 1, 1, 10, 0, 0)
     items = [
-        RawNews(
-            id=1,
-            source_id=1,
-            title="ЦБ повысил ключевую ставку на 1 п.п.",
-            summary="Решение по ставке влияет на инфляцию и кредитование.",
-            url="https://example.com/1",
-            external_id="a",
-            published_at=base,
-        ),
-        RawNews(
-            id=2,
-            source_id=2,
-            title="Центробанк повысил ключевую ставку на 1 п.п.",
-            summary="Похожая новость из другого источника.",
-            url="https://example.com/2",
-            external_id="b",
-            published_at=base + timedelta(minutes=1),
-        ),
-        RawNews(
-            id=3,
-            source_id=3,
-            title="Минфин и ЦБ обсуждают параметры ключевой ставки",
-            summary="Обсуждение ставки и макроэкономических последствий.",
-            url="https://example.com/3",
-            external_id="c",
-            published_at=base + timedelta(minutes=2),
-        ),
-        RawNews(
-            id=4,
-            source_id=4,
-            title="Ключевая ставка сохранена на прежнем уровне",
-            summary="Регулятор не изменил ставку на текущем заседании.",
-            url="https://example.com/4",
-            external_id="d",
-            published_at=base + timedelta(minutes=3),
-        ),
+        RawNews(id=1, source_id=1, title="Парламент утвердил бюджет", summary="Бюджет и правительство", url="https://example.com/a", external_id="a", published_at=base),
+        RawNews(id=2, source_id=1, title="Правительство обсудило реформу", summary="Политическое решение", url="https://example.com/b", external_id="b", published_at=base + timedelta(minutes=1)),
+        RawNews(id=3, source_id=1, title="Президент подписал указ", summary="Политика и госуправление", url="https://example.com/c", external_id="c", published_at=base + timedelta(minutes=2)),
+        RawNews(id=4, source_id=2, title="ЦБ изменил ставку", summary="Экономика и инфляция", url="https://example.com/d", external_id="d", published_at=base + timedelta(minutes=3)),
+        RawNews(id=5, source_id=2, title="ООН провела встречу", summary="Международные переговоры", url="https://example.com/e", external_id="e", published_at=base + timedelta(minutes=4)),
     ]
 
-    deduped_count = len(s._deduplicate(items))
-    digest = s._build_extractive("daily", items, {"1": 1, "2": 1, "3": 1, "4": 1})
+    digest = s._build_extractive("daily", items, {"1": 3, "2": 2})
 
-    assert deduped_count > 1
-    assert digest.items_count == deduped_count
-    assert digest.quality_metrics["selected"] == deduped_count
-    assert sum(digest.topic_breakdown.values()) == deduped_count
+    assert digest.quality_metrics["removed_by_topic_limit"] >= 1

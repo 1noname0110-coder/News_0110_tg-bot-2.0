@@ -40,7 +40,13 @@ class DigestSummarizer:
                 items_count=0,
                 source_breakdown={},
                 topic_breakdown={},
-                quality_metrics={"accepted_before_dedup": 0, "deduplicated": 0, "selected": 0},
+                quality_metrics={
+                    "accepted_before_dedup": 0,
+                    "deduplicated": 0,
+                    "selected": 0,
+                    "duplicates_removed": 0,
+                    "removed_by_topic_limit": 0,
+                },
             )
 
         source_breakdown = Counter(str(n.source_id) for n in news)
@@ -53,7 +59,13 @@ class DigestSummarizer:
                 items_count=min(len(news), 15 if period_type == "weekly" else 12),
                 source_breakdown=dict(source_breakdown),
                 topic_breakdown={},
-                quality_metrics={"accepted_before_dedup": len(news), "deduplicated": len(news), "selected": min(len(news), 15 if period_type == "weekly" else 12)},
+                quality_metrics={
+                    "accepted_before_dedup": len(news),
+                    "deduplicated": len(news),
+                    "selected": min(len(news), 15 if period_type == "weekly" else 12),
+                    "duplicates_removed": 0,
+                    "removed_by_topic_limit": 0,
+                },
             )
 
         return self._build_extractive(period_type, news, dict(source_breakdown))
@@ -102,11 +114,19 @@ class DigestSummarizer:
             reverse=True,
         )
 
-        if publish_all_important:
-            selected = [(item, result.topic) for item, result in ranked]
-        else:
-            topic_count: dict[str, int] = defaultdict(int)
-            selected = []
+        topic_count: dict[str, int] = defaultdict(int)
+        selected: list[tuple[RawNews, str]] = []
+        removed_by_topic_limit = 0
+        for item, result in ranked:
+            if topic_count[result.topic] >= per_topic_limit:
+                removed_by_topic_limit += 1
+                continue
+            selected.append((item, result.topic))
+            topic_count[result.topic] += 1
+            if len(selected) >= cap:
+                break
+
+        if len(selected) < min_items:
             for item, result in ranked:
                 if topic_count[result.topic] >= per_topic_limit:
                     continue
@@ -148,6 +168,7 @@ class DigestSummarizer:
                 "deduplicated": len(deduped),
                 "selected": len(selected),
                 "duplicates_removed": max(0, len(news) - len(deduped)),
+                "removed_by_topic_limit": removed_by_topic_limit,
             },
         )
 

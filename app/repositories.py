@@ -180,6 +180,11 @@ class NewsRepository:
         selected = 0
         deduplicated = 0
         duplicates_removed = 0
+        fetched_from_db = 0
+        rejected_by_filter = 0
+        removed_as_duplicates = 0
+        removed_by_topic_limit = 0
+        published_items = 0
         topic_distribution: Counter[str] = Counter()
         rejection_reasons: Counter[str] = Counter()
 
@@ -188,6 +193,11 @@ class NewsRepository:
             selected += int(qm.get("selected", 0))
             deduplicated += int(qm.get("deduplicated", 0))
             duplicates_removed += int(qm.get("duplicates_removed", 0))
+            fetched_from_db += int(qm.get("fetched_from_db", qm.get("raw_total", 0)))
+            rejected_by_filter += int(qm.get("rejected_by_filter", qm.get("rejected_total", 0)))
+            removed_as_duplicates += int(qm.get("removed_as_duplicates", qm.get("duplicates_removed", 0)))
+            removed_by_topic_limit += int(qm.get("removed_by_topic_limit", 0))
+            published_items += int(qm.get("published_items", qm.get("selected", 0)))
             for topic, count in (row.topic_breakdown or {}).items():
                 topic_distribution[str(topic)] += int(count)
             for reason, count in (qm.get("rejection_reasons", {}) or {}).items():
@@ -200,6 +210,11 @@ class NewsRepository:
             "selected_total": selected,
             "deduplicated_total": deduplicated,
             "duplicates_removed_total": duplicates_removed,
+            "fetched_from_db_total": fetched_from_db,
+            "rejected_by_filter_total": rejected_by_filter,
+            "removed_as_duplicates_total": removed_as_duplicates,
+            "removed_by_topic_limit_total": removed_by_topic_limit,
+            "published_items_total": published_items,
             "acceptance_rate": acceptance_rate,
             "topic_distribution": dict(topic_distribution),
             "rejection_reasons": dict(rejection_reasons),
