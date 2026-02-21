@@ -77,6 +77,11 @@ class DigestService:
 
         digest = await self.summarizer.build_digest(period_type, accepted)
         quality_metrics = dict(digest.quality_metrics)
+        quality_metrics["fetched_from_db"] = len(raw_items)
+        quality_metrics["rejected_by_filter"] = len(raw_items) - len(accepted)
+        quality_metrics["removed_as_duplicates"] = int(digest.quality_metrics.get("duplicates_removed", 0))
+        quality_metrics["removed_by_topic_limit"] = int(digest.quality_metrics.get("removed_by_topic_limit", 0))
+        quality_metrics["published_items"] = digest.items_count
         quality_metrics["raw_total"] = len(raw_items)
         quality_metrics["accepted_total"] = len(accepted)
         quality_metrics["rejected_total"] = len(raw_items) - len(accepted)

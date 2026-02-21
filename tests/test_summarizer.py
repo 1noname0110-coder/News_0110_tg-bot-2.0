@@ -42,3 +42,22 @@ def test_extractive_deduplicates_and_balances_topics() -> None:
     assert digest.quality_metrics["duplicates_removed"] >= 1
     assert sum(digest.topic_breakdown.values()) == digest.items_count
     assert "Источник</a>" in digest.body
+
+
+def test_extractive_reports_removed_by_topic_limit() -> None:
+    settings = _settings()
+    settings.per_topic_limit_daily = 1
+    s = DigestSummarizer(settings)
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    items = [
+        RawNews(id=1, source_id=1, title="Парламент утвердил бюджет", summary="Бюджет и правительство", url="https://example.com/a", external_id="a", published_at=base),
+        RawNews(id=2, source_id=1, title="Правительство обсудило реформу", summary="Политическое решение", url="https://example.com/b", external_id="b", published_at=base + timedelta(minutes=1)),
+        RawNews(id=3, source_id=1, title="Президент подписал указ", summary="Политика и госуправление", url="https://example.com/c", external_id="c", published_at=base + timedelta(minutes=2)),
+        RawNews(id=4, source_id=2, title="ЦБ изменил ставку", summary="Экономика и инфляция", url="https://example.com/d", external_id="d", published_at=base + timedelta(minutes=3)),
+        RawNews(id=5, source_id=2, title="ООН провела встречу", summary="Международные переговоры", url="https://example.com/e", external_id="e", published_at=base + timedelta(minutes=4)),
+    ]
+
+    digest = s._build_extractive("daily", items, {"1": 3, "2": 2})
+
+    assert digest.quality_metrics["removed_by_topic_limit"] >= 1
