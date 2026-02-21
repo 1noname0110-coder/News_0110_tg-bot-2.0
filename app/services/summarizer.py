@@ -101,7 +101,8 @@ class DigestSummarizer:
     def _build_extractive(self, period_type: str, news: list[RawNews], source_breakdown: dict[str, int]) -> DigestOutput:
         default_cap = 12 if period_type == "daily" else 15
         min_items = 5 if period_type == "daily" else 7
-        cap = len(news) if self.settings.publish_all_important else default_cap
+        publish_all_important = self.settings.publish_all_important
+        cap = default_cap
         per_topic_limit = self.settings.per_topic_limit_daily if period_type == "daily" else self.settings.per_topic_limit_weekly
 
         deduped = self._deduplicate(news)
@@ -127,11 +128,20 @@ class DigestSummarizer:
 
         if len(selected) < min_items:
             for item, result in ranked:
-                if any(item.id == chosen.id for chosen, _ in selected):
+                if topic_count[result.topic] >= per_topic_limit:
                     continue
                 selected.append((item, result.topic))
-                if len(selected) >= min(min_items, len(ranked)):
+                topic_count[result.topic] += 1
+                if len(selected) >= cap:
                     break
+
+            if len(selected) < min_items:
+                for item, result in ranked:
+                    if any(item.id == chosen.id for chosen, _ in selected):
+                        continue
+                    selected.append((item, result.topic))
+                    if len(selected) >= min(min_items, len(ranked)):
+                        break
 
         title = "Итоги дня: политика и экономика" if period_type == "daily" else "Итоги недели: ключевые изменения"
         lines: list[str] = []
