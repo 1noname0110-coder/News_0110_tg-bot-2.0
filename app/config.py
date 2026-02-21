@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     fetch_timeout_seconds: int = Field(default=20, alias="FETCH_TIMEOUT_SECONDS")
 
     dedup_similarity_threshold: float = Field(default=0.82, alias="DEDUP_SIMILARITY_THRESHOLD")
+    dedup_similarity_threshold_same_source: float | None = Field(
+        default=None,
+        alias="DEDUP_SIMILARITY_THRESHOLD_SAME_SOURCE",
+    )
+    dedup_similarity_threshold_cross_source: float | None = Field(
+        default=None,
+        alias="DEDUP_SIMILARITY_THRESHOLD_CROSS_SOURCE",
+    )
     per_topic_limit_daily: int = Field(default=3, alias="PER_TOPIC_LIMIT_DAILY")
     per_topic_limit_weekly: int = Field(default=4, alias="PER_TOPIC_LIMIT_WEEKLY")
     publish_all_important: bool = Field(default=True, alias="PUBLISH_ALL_IMPORTANT")
