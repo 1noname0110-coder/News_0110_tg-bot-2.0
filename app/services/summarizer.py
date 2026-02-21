@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+from urllib.parse import urlparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -174,17 +175,59 @@ class DigestSummarizer:
 
     def _deduplicate(self, news: list[RawNews]) -> list[RawNews]:
         selected: list[RawNews] = []
+        summary_prefix_len = 180
         for candidate in sorted(news, key=lambda n: (n.published_at, len(n.summary)), reverse=True):
-            norm = self._normalize(candidate.title)
+            candidate_key = self._dedup_similarity_key(candidate, summary_prefix_len)
             duplicate = False
             for existing in selected:
-                ratio = SequenceMatcher(None, norm, self._normalize(existing.title)).ratio()
-                if ratio >= self.settings.dedup_similarity_threshold:
+                if self._is_exact_duplicate(candidate, existing):
+                    duplicate = True
+                    break
+
+                threshold = self._dedup_threshold(candidate, existing)
+                ratio = SequenceMatcher(
+                    None,
+                    candidate_key,
+                    self._dedup_similarity_key(existing, summary_prefix_len),
+                ).ratio()
+                if ratio >= threshold:
                     duplicate = True
                     break
             if not duplicate:
                 selected.append(candidate)
         return selected
+
+    def _dedup_similarity_key(self, item: RawNews, summary_prefix_len: int) -> str:
+        title = self._normalize(item.title)
+        summary_prefix = self._normalize(item.summary[:summary_prefix_len])
+        return f"{title} {summary_prefix}".strip()
+
+    def _dedup_threshold(self, candidate: RawNews, existing: RawNews) -> float:
+        base = self.settings.dedup_similarity_threshold
+        same_source_default = min(1.0, base)
+        cross_source_default = min(1.0, max(base, base + 0.08))
+
+        if candidate.source_id == existing.source_id:
+            return self.settings.dedup_similarity_threshold_same_source or same_source_default
+        return self.settings.dedup_similarity_threshold_cross_source or cross_source_default
+
+    def _is_exact_duplicate(self, candidate: RawNews, existing: RawNews) -> bool:
+        if candidate.url and existing.url and candidate.url == existing.url:
+            return True
+        if candidate.external_id and existing.external_id and candidate.external_id == existing.external_id:
+            return True
+        candidate_domain_path = self._domain_path(candidate.url)
+        existing_domain_path = self._domain_path(existing.url)
+        return bool(candidate_domain_path and candidate_domain_path == existing_domain_path)
+
+    @staticmethod
+    def _domain_path(url: str) -> str:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower().removeprefix("www.")
+        path = parsed.path.rstrip("/")
+        if not domain:
+            return ""
+        return f"{domain}{path}"
 
     @staticmethod
     def _normalize(text: str) -> str:
