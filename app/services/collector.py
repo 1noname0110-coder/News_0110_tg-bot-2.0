@@ -144,13 +144,31 @@ class NewsCollector:
         return out
 
     @staticmethod
-    def _parse_dt(raw: str | None) -> datetime:
+    def _parse_dt(raw: str | int | float | None) -> datetime:
         if not raw:
             return datetime.utcnow()
         try:
-            dt = parsedate_to_datetime(raw)
+            if isinstance(raw, (int, float)):
+                dt = datetime.fromtimestamp(raw, tz=timezone.utc)
+            else:
+                try:
+                    dt = parsedate_to_datetime(raw)
+                except Exception:
+                    normalized_raw = raw.strip()
+                    if normalized_raw.endswith("Z"):
+                        normalized_raw = normalized_raw[:-1] + "+00:00"
+                    try:
+                        dt = datetime.fromisoformat(normalized_raw)
+                    except Exception:
+                        if normalized_raw.isdigit() or (
+                            normalized_raw.startswith("-") and normalized_raw[1:].isdigit()
+                        ):
+                            dt = datetime.fromtimestamp(int(normalized_raw), tz=timezone.utc)
+                        else:
+                            raise
+
             if dt.tzinfo:
-                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
             return dt
         except Exception:
             return datetime.utcnow()
