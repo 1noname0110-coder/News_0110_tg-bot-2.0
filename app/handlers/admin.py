@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import Router
@@ -10,6 +10,7 @@ from aiogram.types import Message
 
 from app.config import Settings
 from app.db import AsyncSessionLocal
+from app.periods import get_calendar_week_bounds
 from app.repositories import NewsRepository, SourceRepository
 
 router = Router(name="admin")
@@ -114,12 +115,12 @@ async def stat_week(message: Message, settings: Settings) -> None:
         return
 
     tz = ZoneInfo(settings.timezone)
-    now = datetime.now(tz).date()
-    week_start = now - timedelta(days=now.weekday())
+    now_local = datetime.now(tz)
+    week_start, week_end = get_calendar_week_bounds(now_local)
 
     async with AsyncSessionLocal() as session:
         repo = NewsRepository(session)
-        stats = await repo.compute_weekly_stats(week_start)
+        stats = await repo.compute_weekly_stats(week_start.date())
 
     total_sources = sum(stats.source_usage.values()) or 1
     total_rejections = sum(stats.rejection_breakdown.values()) or 1
@@ -135,7 +136,7 @@ async def stat_week(message: Message, settings: Settings) -> None:
     ] or ["Отклонений нет"]
 
     text = (
-        f"Статистика недели с {week_start:%d.%m.%Y}\n"
+        f"Статистика недели с {week_start:%d.%m.%Y %H:%M} по {week_end:%d.%m.%Y %H:%M}\n"
         f"Опубликовано сводок: {stats.published_count}\n"
         f"Отклонено новостей: {stats.rejected_count}\n\n"
         f"Использование источников:\n" + "\n".join(usage_lines) + "\n\n"
