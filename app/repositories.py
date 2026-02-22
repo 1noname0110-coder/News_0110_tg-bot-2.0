@@ -64,7 +64,7 @@ class NewsRepository:
     async def fetch_period_news(self, start_dt: datetime, end_dt: datetime, limit: int | None = None) -> list[RawNews]:
         query = (
             select(RawNews)
-            .where(and_(RawNews.published_at >= start_dt, RawNews.published_at <= end_dt))
+            .where(and_(RawNews.published_at >= start_dt, RawNews.published_at < end_dt))
             .order_by(RawNews.published_at.desc(), RawNews.id.desc())
         )
         if limit and limit > 0:
