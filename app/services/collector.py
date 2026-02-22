@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import re
 import warnings
+from hashlib import sha256
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import feedparser
 import httpx
@@ -66,24 +68,53 @@ class NewsCollector:
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         items = []
-        for idx, article in enumerate(soup.select(selector)[:50]):
+        for article in soup.select(selector)[:50]:
             title_tag = article.select_one(title_selector)
             title = (title_tag.get_text(strip=True) if title_tag else article.get_text(" ", strip=True))[:1024]
             if not title:
                 continue
             summary = article.get_text(" ", strip=True)[:4000]
+            article_link = self._extract_article_link(source.url, article)
+            external_id = self._site_external_id(article_link=article_link, title=title, summary=summary)
             items.append(
                 {
                     "source_id": source.id,
                     "title": title,
                     "summary": summary,
-                    "url": source.url,
-                    "external_id": f"{source.id}-{idx}-{title[:64]}",
+                    "url": article_link or source.url,
+                    "external_id": external_id,
                     "published_at": now,
                     "tags": [],
                 }
             )
         return items
+
+    @staticmethod
+    def _extract_article_link(base_url: str, article: BeautifulSoup) -> str | None:
+        anchor = article.select_one("a[href]")
+        href = anchor.get("href") if anchor else None
+        if not href:
+            return None
+        return urljoin(base_url, href)
+
+    @staticmethod
+    def _site_external_id(article_link: str | None, title: str, summary: str) -> str:
+        if article_link:
+            normalized_url = NewsCollector._normalize_url(article_link)
+            return f"site-url-{sha256(normalized_url.encode('utf-8')).hexdigest()}"
+
+        content_fingerprint = NewsCollector._normalize_text(title) + "\n" + NewsCollector._normalize_text(summary)
+        return f"site-content-{sha256(content_fingerprint.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        parts = urlsplit(url.strip())
+        path = re.sub(r"/+", "/", parts.path or "/")
+        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path.rstrip("/") or "/", parts.query, ""))
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip().lower()
 
     async def _fetch_api(self, source: Source) -> list[dict]:
         async with httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds) as client:
