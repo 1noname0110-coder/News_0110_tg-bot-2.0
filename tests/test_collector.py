@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 
 import httpx
 import pytest
@@ -111,3 +112,31 @@ async def test_fetch_site_reordered_articles_keep_external_id_without_links(monk
     second_ids = {item["title"]: item["external_id"] for item in second_items}
 
     assert first_ids == second_ids
+
+def test_parse_dt_rfc822_to_utc_naive() -> None:
+    collector = NewsCollector(_settings())
+
+    dt = collector._parse_dt("Wed, 02 Oct 2002 13:00:00 +0200")
+
+    assert dt.tzinfo is None
+    assert dt == datetime(2002, 10, 2, 11, 0, 0)
+
+
+def test_parse_dt_iso8601_to_utc_naive() -> None:
+    collector = NewsCollector(_settings())
+
+    dt = collector._parse_dt("2024-01-15T10:30:45Z")
+
+    assert dt.tzinfo is None
+    assert dt == datetime(2024, 1, 15, 10, 30, 45)
+
+
+def test_parse_dt_invalid_returns_current_utc_naive() -> None:
+    collector = NewsCollector(_settings())
+
+    before = datetime.utcnow()
+    dt = collector._parse_dt("not-a-date")
+    after = datetime.utcnow()
+
+    assert dt.tzinfo is None
+    assert before <= dt <= after
