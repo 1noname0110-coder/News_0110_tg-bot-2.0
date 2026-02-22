@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import DailyStats, PublishedNews, RawNews, RejectedNews, Source, WeeklyStats
 
+ALLOWED_SOURCE_TYPES = {"rss", "site", "api"}
+
 
 class SourceRepository:
     def __init__(self, session: AsyncSession):
@@ -24,6 +26,9 @@ class SourceRepository:
         return list(result.scalars().all())
 
     async def create(self, source_type: str, name: str, url: str, meta: dict | None = None) -> Source | None:
+        if source_type not in ALLOWED_SOURCE_TYPES:
+            return None
+
         source = Source(type=source_type, name=name, url=url, meta=meta or {})
         self.session.add(source)
         try:
