@@ -6,12 +6,13 @@ os.environ.setdefault("BOT_TOKEN", "test-token")
 os.environ.setdefault("CHANNEL_ID", "@test_channel")
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from datetime import datetime
 
 from app.db import Base
-from app.models import PublishedNews, RawNews
+from app.models import PublishedNews, RawNews, RejectedNews
 from app.repositories import NewsRepository, SourceRepository
 
 
@@ -155,6 +156,30 @@ def test_fetch_period_news_uses_exclusive_end_boundary() -> None:
 
             assert [item.external_id for item in current_period] == ["n1"]
             assert [item.external_id for item in next_period] == ["n2"]
+
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_reject_does_not_create_duplicates_for_same_raw_news_id() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        async with Session() as session:
+            repo = NewsRepository(session)
+
+            await repo.reject(raw_news_id=10, source_id=1, reason="low_relevance")
+            await repo.reject(raw_news_id=10, source_id=1, reason="duplicate")
+
+            rows = list((await session.execute(select(RejectedNews).where(RejectedNews.raw_news_id == 10))).scalars().all())
+
+            assert len(rows) == 1
+            assert rows[0].reason == "low_relevance"
 
         await engine.dispose()
 

@@ -51,6 +51,7 @@ class PublishedNews(Base):
 
 class RejectedNews(Base):
     __tablename__ = "rejected_news"
+    __table_args__ = (UniqueConstraint("raw_news_id", name="uix_rejected_news_raw_news_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     raw_news_id: Mapped[int] = mapped_column(Integer, nullable=False)

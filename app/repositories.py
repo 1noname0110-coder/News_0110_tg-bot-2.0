@@ -74,6 +74,10 @@ class NewsRepository:
         return list(result.scalars().all())
 
     async def reject(self, raw_news_id: int, source_id: int, reason: str) -> None:
+        existing = await self.session.scalar(select(RejectedNews).where(RejectedNews.raw_news_id == raw_news_id))
+        if existing:
+            return
+
         self.session.add(RejectedNews(raw_news_id=raw_news_id, source_id=source_id, reason=reason))
         await self.session.commit()
 
