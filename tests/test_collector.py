@@ -113,6 +113,34 @@ async def test_fetch_site_reordered_articles_keep_external_id_without_links(monk
 
     assert first_ids == second_ids
 
+
+@pytest.mark.asyncio
+async def test_fetch_rss_uses_to_thread_for_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    collector = NewsCollector(_settings())
+    source = Source(id=2, name="RSS", type="rss", url="https://example.com/rss", meta={})
+
+    class _FakeParsed:
+        entries = []
+
+    called = {"parse": False, "to_thread": False}
+
+    def fake_parse(url: str):
+        called["parse"] = True
+        assert url == source.url
+        return _FakeParsed()
+
+    async def fake_to_thread(func, *args, **kwargs):
+        called["to_thread"] = True
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.collector.feedparser.parse", fake_parse)
+    monkeypatch.setattr("app.services.collector.asyncio.to_thread", fake_to_thread)
+
+    items = await collector._fetch_rss(source)
+
+    assert items == []
+    assert called == {"parse": True, "to_thread": True}
+
 def test_parse_dt_rfc822_to_utc_naive() -> None:
     collector = NewsCollector(_settings())
 
