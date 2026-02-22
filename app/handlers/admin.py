@@ -11,7 +11,7 @@ from aiogram.types import Message
 from app.config import Settings
 from app.db import AsyncSessionLocal
 from app.periods import get_calendar_week_bounds
-from app.repositories import NewsRepository, SourceRepository
+from app.repositories import ALLOWED_SOURCE_TYPES, NewsRepository, SourceRepository
 
 router = Router(name="admin")
 
@@ -32,6 +32,11 @@ async def add_source(message: Message, settings: Settings) -> None:
         return
 
     source_type, name, url = parts[1], parts[2], parts[3]
+    if source_type not in ALLOWED_SOURCE_TYPES:
+        allowed_values = ", ".join(sorted(ALLOWED_SOURCE_TYPES))
+        await message.answer(f"Некорректный тип источника. Допустимые значения: {allowed_values}.")
+        return
+
     meta = {}
     if len(parts) == 5:
         try:

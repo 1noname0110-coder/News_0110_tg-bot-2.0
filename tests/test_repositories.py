@@ -29,6 +29,19 @@ def test_source_create_returns_none_on_duplicate_name() -> None:
     session.rollback.assert_awaited_once()
 
 
+def test_source_create_returns_none_on_invalid_source_type() -> None:
+    session = MagicMock()
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    repo = SourceRepository(session)
+    result = asyncio.run(repo.create(source_type="telegram", name="invalid", url="https://example.com"))
+
+    assert result is None
+    session.add.assert_not_called()
+    session.commit.assert_not_awaited()
+
+
 def test_aggregate_quality_sums_new_funnel_metrics() -> None:
     start = datetime(2024, 1, 1, 0, 0, 0)
     end = datetime(2024, 1, 1, 23, 59, 59)
