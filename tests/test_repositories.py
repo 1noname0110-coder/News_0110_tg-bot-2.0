@@ -6,10 +6,12 @@ os.environ.setdefault("BOT_TOKEN", "test-token")
 os.environ.setdefault("CHANNEL_ID", "@test_channel")
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from datetime import datetime
 
-from app.models import PublishedNews
+from app.db import Base
+from app.models import PublishedNews, RawNews
 from app.repositories import NewsRepository, SourceRepository
 
 
@@ -110,3 +112,50 @@ def test_aggregate_quality_uses_legacy_quality_keys_as_fallback() -> None:
     assert metrics["rejected_by_filter_total"] == 2
     assert metrics["removed_as_duplicates_total"] == 1
     assert metrics["published_items_total"] == 3
+
+
+def test_fetch_period_news_uses_exclusive_end_boundary() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        period_start = datetime(2024, 1, 1, 10, 0, 0)
+        period_end = datetime(2024, 1, 1, 11, 0, 0)
+        next_period_end = datetime(2024, 1, 1, 12, 0, 0)
+
+        async with Session() as session:
+            session.add_all(
+                [
+                    RawNews(
+                        source_id=1,
+                        title="in current period",
+                        summary="s",
+                        url="https://example.com/1",
+                        external_id="n1",
+                        published_at=datetime(2024, 1, 1, 10, 30, 0),
+                    ),
+                    RawNews(
+                        source_id=1,
+                        title="exactly at end",
+                        summary="s",
+                        url="https://example.com/2",
+                        external_id="n2",
+                        published_at=period_end,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            repo = NewsRepository(session)
+            current_period = await repo.fetch_period_news(period_start, period_end)
+            next_period = await repo.fetch_period_news(period_end, next_period_end)
+
+            assert [item.external_id for item in current_period] == ["n1"]
+            assert [item.external_id for item in next_period] == ["n2"]
+
+        await engine.dispose()
+
+    asyncio.run(_run())
