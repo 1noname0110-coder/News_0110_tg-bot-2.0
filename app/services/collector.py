@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import warnings
@@ -37,7 +38,10 @@ class NewsCollector:
             return []
 
     async def _fetch_rss(self, source: Source) -> list[dict]:
-        parsed = feedparser.parse(source.url)
+        started_at = asyncio.get_running_loop().time()
+        parsed = await asyncio.to_thread(feedparser.parse, source.url)
+        elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+        logger.info("RSS источник %s обработан за %.1fms", source.url, elapsed_ms)
         out = []
         for entry in parsed.entries[:80]:
             ext_id = (entry.get("id") or entry.get("link") or entry.get("title") or "")
