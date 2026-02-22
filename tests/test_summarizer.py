@@ -103,3 +103,92 @@ def test_deduplicate_merges_different_titles_with_same_url() -> None:
     deduped = s._deduplicate(items)
 
     assert len(deduped) == 1
+
+
+def test_build_extractive_publish_all_important_allows_more_than_default_cap() -> None:
+    settings = _settings()
+    settings.publish_all_important = True
+    settings.per_topic_limit_daily = 100
+    settings.dedup_similarity_threshold = 0.99
+    s = DigestSummarizer(settings)
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    unique_topics = [
+        "металлургия",
+        "логистика",
+        "телеком",
+        "фармацевтика",
+        "агросектор",
+        "энергетика",
+        "строительство",
+        "машиностроение",
+        "банкинг",
+        "страхование",
+        "ритейл",
+        "транспорт",
+        "IT-экспорт",
+        "судоходство",
+        "авиапром",
+        "биотех",
+    ]
+    items = [
+        RawNews(
+            id=100 + i,
+            source_id=i,
+            title=f"{topic}: зафиксирован новый этап реформ",
+            summary=f"Отрасль {topic} показала уникальную динамику: отдельный пакет мер, контракты и экспортные эффекты для региона {i}.",
+            url=f"https://example.com/news/{i}",
+            external_id=f"ext-{i}",
+            published_at=base + timedelta(minutes=i),
+        )
+        for i, topic in enumerate(unique_topics, start=1)
+    ]
+
+    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 17)})
+
+    assert digest.items_count > 12
+    assert digest.items_count == 16
+
+
+def test_build_extractive_publish_all_important_false_keeps_default_cap() -> None:
+    settings = _settings()
+    settings.publish_all_important = False
+    settings.per_topic_limit_daily = 100
+    settings.dedup_similarity_threshold = 0.99
+    s = DigestSummarizer(settings)
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    unique_topics = [
+        "металлургия",
+        "логистика",
+        "телеком",
+        "фармацевтика",
+        "агросектор",
+        "энергетика",
+        "строительство",
+        "машиностроение",
+        "банкинг",
+        "страхование",
+        "ритейл",
+        "транспорт",
+        "IT-экспорт",
+        "судоходство",
+        "авиапром",
+        "биотех",
+    ]
+    items = [
+        RawNews(
+            id=200 + i,
+            source_id=i,
+            title=f"{topic}: зафиксирован новый этап реформ",
+            summary=f"Отрасль {topic} показала уникальную динамику: отдельный пакет мер, контракты и экспортные эффекты для региона {i}.",
+            url=f"https://example.com/important/{i}",
+            external_id=f"important-{i}",
+            published_at=base + timedelta(minutes=i),
+        )
+        for i, topic in enumerate(unique_topics, start=1)
+    ]
+
+    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 17)})
+
+    assert digest.items_count == 12

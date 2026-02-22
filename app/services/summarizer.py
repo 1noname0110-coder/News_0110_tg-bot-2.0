@@ -103,7 +103,6 @@ class DigestSummarizer:
         default_cap = 12 if period_type == "daily" else 15
         min_items = 5 if period_type == "daily" else 7
         publish_all_important = self.settings.publish_all_important
-        cap = default_cap
         per_topic_limit = self.settings.per_topic_limit_daily if period_type == "daily" else self.settings.per_topic_limit_weekly
 
         deduped = self._deduplicate(news)
@@ -114,6 +113,7 @@ class DigestSummarizer:
             key=lambda item: (item[1].score, len(item[0].summary), item[0].published_at),
             reverse=True,
         )
+        cap = len(ranked) if publish_all_important else default_cap
 
         topic_count: dict[str, int] = defaultdict(int)
         selected: list[tuple[RawNews, str]] = []
