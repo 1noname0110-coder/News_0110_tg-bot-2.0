@@ -113,7 +113,9 @@ class DigestSummarizer:
             key=lambda item: (item[1].score, len(item[0].summary), item[0].published_at),
             reverse=True,
         )
-        cap = len(ranked) if publish_all_important else default_cap
+        cap = default_cap
+        if publish_all_important:
+            cap = len(ranked)
 
         topic_count: dict[str, int] = defaultdict(int)
         selected: list[tuple[RawNews, str]] = []
