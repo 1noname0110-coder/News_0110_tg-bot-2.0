@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 from urllib.parse import urlparse
 from collections import Counter, defaultdict
@@ -13,6 +14,9 @@ from openai import AsyncOpenAI
 from app.config import Settings
 from app.models import RawNews
 from app.services.filtering import NewsFilter
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,7 +63,12 @@ class DigestSummarizer:
         source_breakdown = Counter(str(n.source_id) for n in news)
 
         if self.client:
-            generated = await self._build_with_llm(period_type, news)
+            generated: dict[str, Any] | None = None
+            try:
+                generated = await self._build_with_llm(period_type, news)
+            except Exception:
+                logger.exception("LLM summarization failed, falling back to extractive digest")
+
             if generated:
                 return DigestOutput(
                     title=generated["title"],
@@ -75,6 +84,8 @@ class DigestSummarizer:
                         "removed_by_topic_limit": 0,
                     },
                 )
+
+            logger.warning("LLM summarization returned invalid format, falling back to extractive digest")
 
         return self._build_extractive(period_type, news, dict(source_breakdown))
 

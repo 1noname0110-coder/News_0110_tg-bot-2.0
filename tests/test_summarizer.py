@@ -292,3 +292,49 @@ async def test_build_digest_with_llm_invalid_format_falls_back_to_extractive() -
     assert digest.quality_metrics["selected"] == digest.items_count
     assert "<a href=\"https://valid.example/1\">Источник</a>" in digest.body
     assert sum(digest.topic_breakdown.values()) == digest.items_count
+
+
+@pytest.mark.asyncio
+async def test_build_digest_with_llm_exception_falls_back_to_extractive() -> None:
+    settings = _settings()
+    settings.llm_enabled = True
+    s = DigestSummarizer(settings)
+
+    class FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            raise RuntimeError("llm unavailable")
+
+    s.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    items = [
+        RawNews(
+            id=i,
+            source_id=i,
+            title=title,
+            summary=(
+                f"{topic} {i}: расширенное описание реформ и отраслевых последствий с уникальными параметрами {i * 9}. "
+                "Показатели подтверждены ведомствами и профильными ассоциациями."
+            ),
+            url=f"https://exception.example/{i}",
+            external_id=f"exception-{i}",
+            published_at=base + timedelta(minutes=i),
+        )
+        for i, (topic, title) in enumerate(
+            [
+                ("Экономика", "Минфин представил обновленный бюджетный прогноз"),
+                ("Политика", "Правительство согласовало пакет административных изменений"),
+                ("Транспорт", "Оператор сообщил о расширении железнодорожных коридоров"),
+                ("Энергетика", "Регулятор утвердил параметры модернизации сетей"),
+                ("Технологии", "Профильное ведомство запустило пилот по цифровым сервисам"),
+            ],
+            start=1,
+        )
+    ]
+
+    digest = await s.build_digest("daily", items)
+
+    assert digest.items_count > 0
+    assert digest.quality_metrics["selected"] == digest.items_count
+    assert '<a href="https://exception.example/1">Источник</a>' in digest.body
+    assert sum(digest.topic_breakdown.values()) == digest.items_count
