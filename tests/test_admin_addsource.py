@@ -92,7 +92,7 @@ async def test_addsource_accepts_valid_url(monkeypatch: pytest.MonkeyPatch) -> N
                 source=SimpleNamespace(id=7, name=name, type=source_type),
             )
 
-    monkeypatch.setattr(admin, "AsyncSessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(admin, "get_session_factory", lambda: (lambda: _FakeSession()))
     monkeypatch.setattr(admin, "SourceRepository", _FakeRepo)
 
     await admin.add_source(_FakeMessage(), settings)
@@ -132,7 +132,7 @@ async def test_addsource_returns_duplicate_message(monkeypatch: pytest.MonkeyPat
         async def create(self, source_type: str, name: str, url: str, meta: dict | None = None):
             return SourceCreateResult(status=SourceCreateStatus.DUPLICATE_NAME)
 
-    monkeypatch.setattr(admin, "AsyncSessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(admin, "get_session_factory", lambda: (lambda: _FakeSession()))
     monkeypatch.setattr(admin, "SourceRepository", _FakeRepo)
 
     await admin.add_source(_FakeMessage(), settings)
@@ -170,7 +170,7 @@ async def test_addsource_returns_generic_db_error_and_logs_exception(monkeypatch
     def _fake_logger(*args, **kwargs):
         log_calls.append((args, kwargs))
 
-    monkeypatch.setattr(admin, "AsyncSessionLocal", lambda: _FakeSession())
+    monkeypatch.setattr(admin, "get_session_factory", lambda: (lambda: _FakeSession()))
     monkeypatch.setattr(admin, "SourceRepository", _FakeRepo)
     monkeypatch.setattr(admin.logger, "exception", _fake_logger)
 

@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.config import Settings
-from app.db import AsyncSessionLocal
+from app.db import get_session_factory
 from app.periods import get_calendar_week_bounds
 from app.repositories import (
     ALLOWED_SOURCE_TYPES,
@@ -61,7 +61,7 @@ async def add_source(message: Message, settings: Settings) -> None:
             await message.answer("Некорректный JSON в meta.")
             return
 
-    async with AsyncSessionLocal() as session:
+    async with get_session_factory()() as session:
         repo = SourceRepository(session)
         result = await repo.create(source_type=source_type, name=name, url=url, meta=meta)
 
@@ -95,7 +95,7 @@ async def remove_source(message: Message, settings: Settings) -> None:
         return
 
     source_id = int(parts[1])
-    async with AsyncSessionLocal() as session:
+    async with get_session_factory()() as session:
         repo = SourceRepository(session)
         ok = await repo.remove(source_id)
     await message.answer("Источник удалён." if ok else "Источник не найден.")
@@ -110,7 +110,7 @@ async def stat_day(message: Message, settings: Settings) -> None:
     tz = ZoneInfo(settings.timezone)
     today = datetime.now(tz).date()
 
-    async with AsyncSessionLocal() as session:
+    async with get_session_factory()() as session:
         repo = NewsRepository(session, timezone=settings.timezone)
         stats = await repo.compute_daily_stats(today)
 
@@ -147,7 +147,7 @@ async def stat_week(message: Message, settings: Settings) -> None:
     now_local = datetime.now(tz)
     week_start, week_end = get_calendar_week_bounds(now_local)
 
-    async with AsyncSessionLocal() as session:
+    async with get_session_factory()() as session:
         repo = NewsRepository(session, timezone=settings.timezone)
         stats = await repo.compute_weekly_stats(week_start.date())
 
@@ -185,7 +185,7 @@ async def stat_week_live(message: Message, settings: Settings) -> None:
     now_local = datetime.now(tz)
     week_start, _ = get_calendar_week_bounds(now_local)
 
-    async with AsyncSessionLocal() as session:
+    async with get_session_factory()() as session:
         repo = NewsRepository(session, timezone=settings.timezone)
         stats = await repo.compute_weekly_stats_live(week_start.date(), now_local.replace(tzinfo=None))
 
@@ -222,7 +222,7 @@ async def quality(message: Message, settings: Settings) -> None:
     tz = ZoneInfo(settings.timezone)
     today = datetime.now(tz).date()
 
-    async with AsyncSessionLocal() as session:
+    async with get_session_factory()() as session:
         repo = NewsRepository(session, timezone=settings.timezone)
         stats = await repo.compute_daily_stats(today)
 

@@ -7,7 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
 
 from app.config import Settings
-from app.db import AsyncSessionLocal
+from app.db import get_session_factory
 from app.services.digest_service import DigestService
 
 logger = logging.getLogger(__name__)
@@ -41,15 +41,15 @@ class BotScheduler:
         )
 
     async def _collect_job(self) -> None:
-        async with AsyncSessionLocal() as session:
+        async with get_session_factory()() as session:
             await self.digest_service.collect_and_store(session)
 
     async def _daily_job(self) -> None:
-        async with AsyncSessionLocal() as session:
+        async with get_session_factory()() as session:
             await self.digest_service.publish_daily(self.bot, session)
 
     async def _weekly_job(self) -> None:
-        async with AsyncSessionLocal() as session:
+        async with get_session_factory()() as session:
             await self.digest_service.publish_weekly(self.bot, session)
 
     def start(self) -> None:
