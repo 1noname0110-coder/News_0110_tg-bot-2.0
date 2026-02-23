@@ -1,9 +1,13 @@
 import re
+import logging
 from functools import lru_cache
 from typing import Any
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -67,6 +71,30 @@ class Settings(BaseSettings):
             data["CHANNEL_ID"] = malformed_key
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_admin_user_ids_format(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        raw_admin_ids = data.get("ADMIN_USER_IDS")
+        if raw_admin_ids is None:
+            return data
+
+        invalid_values = [
+            part.strip()
+            for part in str(raw_admin_ids).split(",")
+            if part.strip() and not part.strip().isdigit()
+        ]
+
+        if invalid_values:
+            raise ValueError(
+                "Некорректный формат ADMIN_USER_IDS: ожидается список числовых Telegram user id через запятую "
+                f"(например, '123456789,987654321'). Неверные значения: {', '.join(invalid_values)}"
+            )
+
+        return data
+
     @model_validator(mode="after")
     def ensure_required_runtime_values(self) -> "Settings":
         if not self.channel_id.strip():
@@ -79,7 +107,18 @@ class Settings(BaseSettings):
     def admin_ids(self) -> set[int]:
         if not self.admin_user_ids.strip():
             return set()
-        return {int(uid.strip()) for uid in self.admin_user_ids.split(",") if uid.strip()}
+
+        parsed_ids: set[int] = set()
+        for uid in self.admin_user_ids.split(","):
+            normalized_uid = uid.strip()
+            if not normalized_uid:
+                continue
+            if not normalized_uid.isdigit():
+                logger.warning("Skipping invalid admin user id value: %r", normalized_uid)
+                continue
+            parsed_ids.add(int(normalized_uid))
+
+        return parsed_ids
 
 
 @lru_cache

@@ -55,7 +55,7 @@ cp .env.example .env
 - `BOT_TOKEN` — токен бота.
 - `CHANNEL_ID` — id канала (`@channel_name` или числовой id).
   - также поддержаны `CHAT_ID` и `TELEGRAM_CHANNEL_ID` как альтернативные имена переменной.
-- `ADMIN_USER_IDS` — Telegram user id админов через запятую.
+- `ADMIN_USER_IDS` — Telegram user id админов через запятую (только числа), например: `123456789,987654321`.
 - `DATABASE_URL`:
   - SQLite: `sqlite+aiosqlite:///./news_bot.db`
   - PostgreSQL: `postgresql+asyncpg://user:pass@host:5432/dbname`

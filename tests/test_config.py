@@ -33,3 +33,28 @@ def test_accepts_custom_period_news_limits() -> None:
     )
     assert settings.max_period_news_daily == 120
     assert settings.max_period_news_weekly == 240
+
+
+def test_parses_admin_ids_with_empty_values() -> None:
+    settings = Settings.model_validate(
+        {
+            "BOT_TOKEN": "token",
+            "CHANNEL_ID": "-1001234567890",
+            "ADMIN_USER_IDS": "12345, ,67890,,",
+        }
+    )
+    assert settings.admin_ids == {12345, 67890}
+
+
+def test_rejects_non_numeric_admin_ids() -> None:
+    try:
+        Settings.model_validate(
+            {
+                "BOT_TOKEN": "token",
+                "CHANNEL_ID": "-1001234567890",
+                "ADMIN_USER_IDS": "12345,abc,67890",
+            }
+        )
+        assert False, "Expected validation error for non-numeric ADMIN_USER_IDS"
+    except ValueError as exc:
+        assert "Некорректный формат ADMIN_USER_IDS" in str(exc)
