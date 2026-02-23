@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -126,6 +127,13 @@ class DigestService:
         for idx, chunk in enumerate(chunks, 1):
             header = f"{title}\n\n" if idx == 1 else f"{title} (продолжение {idx}/{total})\n\n"
             sent = False
+            logger.info(
+                "Дайджест: подготовлен чанк %s/%s, длина тела=%s, длина с заголовком=%s",
+                idx,
+                total,
+                len(chunk),
+                len(header + chunk),
+            )
 
             for attempt in range(1, self.SEND_RETRY_ATTEMPTS + 1):
                 try:
@@ -214,26 +222,85 @@ class DigestService:
         if len(body) <= self.TELEGRAM_MAX_CHARS:
             return [body]
 
-        sections = body.split("\n\n")
+        blocks = self._extract_logical_blocks(body)
         chunks: list[str] = []
         current = ""
 
-        for section in sections:
-            candidate = section if not current else f"{current}\n\n{section}"
-            if len(candidate) <= self.TELEGRAM_MAX_CHARS:
-                current = candidate
+        for block in blocks:
+            if len(block) > self.TELEGRAM_MAX_CHARS:
+                oversized_parts = self._split_oversized_block(block)
             else:
+                oversized_parts = [block]
+
+            for part in oversized_parts:
+                candidate = part if not current else f"{current}\n\n{part}"
+                if len(candidate) <= self.TELEGRAM_MAX_CHARS and self._has_balanced_anchor_tags(candidate):
+                    current = candidate
+                    continue
+
                 if current:
                     chunks.append(current)
-                if len(section) <= self.TELEGRAM_MAX_CHARS:
-                    current = section
-                else:
-                    start = 0
-                    while start < len(section):
-                        part = section[start : start + self.TELEGRAM_MAX_CHARS]
-                        chunks.append(part)
-                        start += self.TELEGRAM_MAX_CHARS
-                    current = ""
+                current = part
+
         if current:
             chunks.append(current)
-        return chunks or [body[: self.TELEGRAM_MAX_CHARS]]
+
+        valid_chunks = [chunk for chunk in chunks if chunk.strip() and self._has_balanced_anchor_tags(chunk)]
+        return valid_chunks or [body]
+
+    def _extract_logical_blocks(self, body: str) -> list[str]:
+        blocks: list[str] = []
+        for section in body.split("\n\n"):
+            section = section.strip()
+            if not section:
+                continue
+
+            lines = [line.strip() for line in section.split("\n") if line.strip()]
+            if len(lines) <= 1:
+                blocks.append(section)
+                continue
+
+            blocks.extend(lines)
+        return blocks or [body]
+
+    def _split_oversized_block(self, block: str) -> list[str]:
+        parts: list[str] = []
+        current = ""
+
+        for token in self._tokenize_block(block):
+            candidate = f"{current}{token}"
+            if len(candidate) <= self.TELEGRAM_MAX_CHARS:
+                current = candidate
+                continue
+
+            if current and self._has_balanced_anchor_tags(current):
+                parts.append(current.strip())
+                current = token.lstrip()
+            else:
+                current = candidate
+
+        if current.strip():
+            parts.append(current.strip())
+
+        return parts or [block]
+
+    @staticmethod
+    def _tokenize_block(block: str) -> list[str]:
+        tokens: list[str] = []
+        cursor = 0
+        for match in re.finditer(r"<a\b[^>]*>.*?</a>", block, flags=re.IGNORECASE | re.DOTALL):
+            if match.start() > cursor:
+                tokens.extend(re.findall(r"\S+\s*", block[cursor:match.start()]))
+            tokens.append(match.group(0))
+            cursor = match.end()
+
+        if cursor < len(block):
+            tokens.extend(re.findall(r"\S+\s*", block[cursor:]))
+
+        return tokens or [block]
+
+    @staticmethod
+    def _has_balanced_anchor_tags(text: str) -> bool:
+        openings = re.findall(r"<a\b[^>]*>", text)
+        closings = re.findall(r"</a>", text)
+        return len(openings) == len(closings)
