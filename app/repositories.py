@@ -155,6 +155,21 @@ class NewsRepository:
         await self.session.refresh(row)
         return row
 
+    async def is_period_already_published(
+        self,
+        period_type: str,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> bool:
+        query = select(PublishedNews.id).where(
+            and_(
+                PublishedNews.period_type == period_type,
+                PublishedNews.period_start == period_start,
+                PublishedNews.period_end == period_end,
+            )
+        )
+        return await self.session.scalar(query) is not None
+
     async def compute_daily_stats(self, stat_date: date) -> DailyStats:
         start, end = self._local_period_to_utc_bounds(
             datetime.combine(stat_date, datetime.min.time()),

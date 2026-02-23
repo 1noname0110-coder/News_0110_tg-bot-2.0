@@ -91,6 +91,23 @@ class DigestService:
             end_dt=now_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
         )
 
+    async def republish_period(
+        self,
+        bot: Bot,
+        session: AsyncSession,
+        period_type: str,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> None:
+        await self._publish_period(
+            bot=bot,
+            session=session,
+            period_type=period_type,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            allow_republish=True,
+        )
+
     async def publish_weekly(self, bot: Bot, session: AsyncSession) -> None:
         tz = ZoneInfo(self.settings.timezone)
         now_local = datetime.now(tz)
@@ -104,8 +121,25 @@ class DigestService:
             end_dt=week_end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
         )
 
-    async def _publish_period(self, bot: Bot, session: AsyncSession, period_type: str, start_dt: datetime, end_dt: datetime) -> None:
+    async def _publish_period(
+        self,
+        bot: Bot,
+        session: AsyncSession,
+        period_type: str,
+        start_dt: datetime,
+        end_dt: datetime,
+        allow_republish: bool = False,
+    ) -> None:
         news_repo = NewsRepository(session, timezone=self.settings.timezone)
+
+        if not allow_republish and await news_repo.is_period_already_published(period_type, start_dt, end_dt):
+            logger.info(
+                "Пропуск публикации: период уже опубликован period_type=%s period_start=%s period_end=%s",
+                period_type,
+                start_dt,
+                end_dt,
+            )
+            return
 
         period_limit = self.settings.max_period_news_daily if period_type == "daily" else self.settings.max_period_news_weekly
         raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
