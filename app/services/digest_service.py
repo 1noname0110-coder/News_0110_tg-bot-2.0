@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 class DigestService:
-    TELEGRAM_MAX_CHARS = 3900
+    TELEGRAM_MESSAGE_MAX = 4096
+    TELEGRAM_MAX_CHARS = TELEGRAM_MESSAGE_MAX
+    DIGEST_TITLE_MAX_CHARS = 500
     SEND_RETRY_ATTEMPTS = 4
     SEND_RETRY_DELAY_SECONDS = 2
     COLLECT_MAX_CONCURRENCY = 8
@@ -189,9 +191,14 @@ class DigestService:
         total = len(chunks)
         sent_chunks = 0
         failed_chunks: list[int] = []
+        safe_title = self._truncate_text(title.strip(), self.DIGEST_TITLE_MAX_CHARS)
 
         for idx, chunk in enumerate(chunks, 1):
-            header = f"{title}\n\n" if idx == 1 else f"{title} (продолжение {idx}/{total})\n\n"
+            header = self._build_chunk_header(safe_title, idx, total)
+            budget = self.TELEGRAM_MESSAGE_MAX - len(header)
+            if len(chunk) > budget:
+                chunk = self._fit_chunk_to_budget(chunk, budget)
+
             sent = False
             logger.info(
                 "Дайджест: подготовлен чанк %s/%s, длина тела=%s, длина с заголовком=%s",
@@ -370,3 +377,39 @@ class DigestService:
         openings = re.findall(r"<a\b[^>]*>", text)
         closings = re.findall(r"</a>", text)
         return len(openings) == len(closings)
+
+    def _build_chunk_header(self, title: str, idx: int, total: int) -> str:
+        suffix = "" if idx == 1 else f" (продолжение {idx}/{total})"
+        max_header_text_len = self.TELEGRAM_MESSAGE_MAX - 3  # + "\n\n" and минимум 1 символ тела
+        allowed_title_len = max(1, max_header_text_len - len(suffix))
+        safe_title = self._truncate_text(title, allowed_title_len)
+        return f"{safe_title}{suffix}\n\n"
+
+    def _fit_chunk_to_budget(self, chunk: str, budget: int) -> str:
+        if budget <= 0:
+            return ""
+        if len(chunk) <= budget:
+            return chunk
+
+        fitted = ""
+        for token in self._tokenize_block(chunk):
+            candidate = f"{fitted}{token}"
+            if len(candidate) <= budget and self._has_balanced_anchor_tags(candidate):
+                fitted = candidate
+                continue
+
+            if not fitted:
+                if re.search(r"<a\b[^>]*>.*?</a>", token, flags=re.IGNORECASE | re.DOTALL):
+                    continue
+                fitted = token[:budget]
+            break
+
+        return fitted.strip() if fitted.strip() else chunk[:budget].strip()
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        if limit <= 1:
+            return text[:limit]
+        return f"{text[: limit - 1].rstrip()}…"

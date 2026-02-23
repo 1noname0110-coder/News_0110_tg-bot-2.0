@@ -82,3 +82,32 @@ async def test_send_digest_messages_adds_continuation_headers() -> None:
     total_chunks = result["total_chunks"]
     for idx, message in enumerate(sent_texts[1:], start=2):
         assert message.startswith(f"Дайджест дня (продолжение {idx}/{total_chunks})\n\n")
+
+
+@pytest.mark.asyncio
+async def test_send_digest_messages_respects_total_limit_with_long_title_and_body() -> None:
+    settings = _settings()
+    service = DigestService(settings)
+    service.TELEGRAM_MESSAGE_MAX = 250
+    service.TELEGRAM_MAX_CHARS = 250
+    service.DIGEST_TITLE_MAX_CHARS = 200
+
+    long_title = "Очень длинный заголовок " * 30
+    body = "\n\n".join(_item(i, 140) for i in range(1, 6))
+
+    sent_texts: list[str] = []
+
+    class _FakeBot:
+        async def send_message(self, chat_id, text):  # noqa: ANN001
+            sent_texts.append(text)
+
+    result = await service._send_digest_messages(_FakeBot(), long_title, body)
+
+    assert result["status"] == "success"
+    assert result["total_chunks"] == len(sent_texts)
+    assert sent_texts
+    for payload in sent_texts:
+        assert len(payload) <= service.TELEGRAM_MESSAGE_MAX
+        assert service._has_balanced_anchor_tags(payload)
+
+    assert "…" in sent_texts[0].split("\n\n", maxsplit=1)[0]
