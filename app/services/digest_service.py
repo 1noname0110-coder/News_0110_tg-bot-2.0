@@ -5,6 +5,7 @@ import logging
 import re
 from collections import Counter
 from datetime import datetime
+from time import perf_counter
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
@@ -32,6 +33,7 @@ class DigestService:
     TELEGRAM_MAX_CHARS = 3900
     SEND_RETRY_ATTEMPTS = 4
     SEND_RETRY_DELAY_SECONDS = 2
+    COLLECT_MAX_CONCURRENCY = 8
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -44,8 +46,35 @@ class DigestService:
         news_repo = NewsRepository(session, timezone=self.settings.timezone)
 
         sources = await source_repo.list_active()
-        for source in sources:
-            items = await self.collector.collect_from_source(source)
+        semaphore = asyncio.Semaphore(self.COLLECT_MAX_CONCURRENCY)
+
+        async def _collect_for_source(source):  # noqa: ANN001
+            started_at = perf_counter()
+            try:
+                async with semaphore:
+                    items = await self.collector.collect_from_source(source)
+            except Exception:
+                elapsed = perf_counter() - started_at
+                logger.exception(
+                    "Сбор источника завершился ошибкой: source_id=%s source_name=%s duration=%.2fs",
+                    source.id,
+                    source.name,
+                    elapsed,
+                )
+                return []
+
+            elapsed = perf_counter() - started_at
+            logger.info(
+                "Сбор источника завершен: source_id=%s source_name=%s duration=%.2fs items=%s",
+                source.id,
+                source.name,
+                elapsed,
+                len(items),
+            )
+            return items
+
+        batches = await asyncio.gather(*(_collect_for_source(source) for source in sources))
+        for items in batches:
             if items:
                 await news_repo.add_raw_news(items)
 
@@ -81,6 +110,7 @@ class DigestService:
         period_limit = self.settings.max_period_news_daily if period_type == "daily" else self.settings.max_period_news_weekly
         raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
         accepted = []
+        reject_entries: list[tuple[int, int, str]] = []
         rejection_reasons = Counter()
 
         for item in raw_items:
@@ -89,7 +119,9 @@ class DigestService:
                 accepted.append(item)
             else:
                 rejection_reasons[result.reason] += 1
-                await news_repo.reject(item.id, item.source_id, result.reason)
+                reject_entries.append((item.id, item.source_id, result.reason))
+
+        await news_repo.reject_many(reject_entries)
 
         digest = await self.summarizer.build_digest(period_type, accepted)
         quality_metrics = dict(digest.quality_metrics)

@@ -81,12 +81,51 @@ class NewsRepository:
         return list(result.scalars().all())
 
     async def reject(self, raw_news_id: int, source_id: int, reason: str) -> None:
-        existing = await self.session.scalar(select(RejectedNews).where(RejectedNews.raw_news_id == raw_news_id))
-        if existing:
-            return
+        await self.reject_many([(raw_news_id, source_id, reason)])
 
-        self.session.add(RejectedNews(raw_news_id=raw_news_id, source_id=source_id, reason=reason))
-        await self.session.commit()
+    async def reject_many(self, rejects: Iterable[tuple[int, int, str]], batch_size: int = 100) -> int:
+        prepared = list(rejects)
+        if not prepared:
+            return 0
+
+        inserted = 0
+        for idx in range(0, len(prepared), batch_size):
+            chunk = prepared[idx:idx + batch_size]
+            raw_news_ids = [raw_news_id for raw_news_id, _, _ in chunk]
+            existing_q = await self.session.execute(
+                select(RejectedNews.raw_news_id).where(RejectedNews.raw_news_id.in_(raw_news_ids))
+            )
+            existing_ids = set(existing_q.scalars().all())
+
+            pending_rows = [
+                (raw_news_id, source_id, reason)
+                for raw_news_id, source_id, reason in chunk
+                if raw_news_id not in existing_ids
+            ]
+            for raw_news_id, source_id, reason in pending_rows:
+                self.session.add(RejectedNews(raw_news_id=raw_news_id, source_id=source_id, reason=reason))
+
+            try:
+                await self.session.commit()
+                inserted += len(pending_rows)
+            except IntegrityError:
+                await self.session.rollback()
+                for raw_news_id, source_id, reason in pending_rows:
+                    existing = await self.session.scalar(
+                        select(RejectedNews.id).where(RejectedNews.raw_news_id == raw_news_id)
+                    )
+                    if existing:
+                        continue
+                    try:
+                        async with self.session.begin_nested():
+                            self.session.add(RejectedNews(raw_news_id=raw_news_id, source_id=source_id, reason=reason))
+                            await self.session.flush()
+                            inserted += 1
+                    except IntegrityError:
+                        continue
+                await self.session.commit()
+
+        return inserted
 
     async def publish_digest(
         self,

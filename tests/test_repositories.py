@@ -299,3 +299,28 @@ def test_compute_weekly_stats_uses_local_timezone_boundaries() -> None:
         await engine.dispose()
 
     asyncio.run(_run())
+
+
+def test_reject_many_does_not_create_duplicates_across_repeated_calls() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        async with Session() as session:
+            repo = NewsRepository(session)
+
+            inserted_first = await repo.reject_many([(11, 1, "noise"), (12, 1, "noise"), (11, 1, "duplicate")])
+            inserted_second = await repo.reject_many([(11, 1, "again"), (12, 1, "again")])
+
+            rows = list((await session.execute(select(RejectedNews).order_by(RejectedNews.raw_news_id.asc()))).scalars().all())
+
+            assert inserted_first == 2
+            assert inserted_second == 0
+            assert [row.raw_news_id for row in rows] == [11, 12]
+
+        await engine.dispose()
+
+    asyncio.run(_run())
