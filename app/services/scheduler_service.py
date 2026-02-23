@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
@@ -7,6 +9,8 @@ from aiogram import Bot
 from app.config import Settings
 from app.db import AsyncSessionLocal
 from app.services.digest_service import DigestService
+
+logger = logging.getLogger(__name__)
 
 
 class BotScheduler:
@@ -49,9 +53,16 @@ class BotScheduler:
             await self.digest_service.publish_weekly(self.bot, session)
 
     def start(self) -> None:
+        logger.info("Запуск планировщика задач")
         self.setup()
         self.scheduler.start()
+        logger.info("Планировщик задач запущен")
+
+    def stop(self) -> None:
+        if self.scheduler.running:
+            logger.info("Остановка планировщика задач")
+            self.scheduler.shutdown(wait=False)
+            logger.info("Планировщик задач остановлен")
 
     def shutdown(self) -> None:
-        if self.scheduler.running:
-            self.scheduler.shutdown(wait=False)
+        self.stop()

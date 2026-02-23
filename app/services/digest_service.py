@@ -43,6 +43,24 @@ class DigestService:
         self.filter = NewsFilter()
         self.summarizer = DigestSummarizer(settings)
 
+    async def aclose(self) -> None:
+        logger.info("Остановка DigestService: закрытие внешних клиентов")
+        await self.collector.aclose()
+
+        client = self.summarizer.client
+        if client is not None:
+            aclose = getattr(client, "aclose", None)
+            if callable(aclose):
+                await aclose()
+            else:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    maybe_coro = close()
+                    if asyncio.iscoroutine(maybe_coro):
+                        await maybe_coro
+
+        logger.info("DigestService остановлен")
+
     async def collect_and_store(self, session: AsyncSession) -> None:
         source_repo = SourceRepository(session)
         news_repo = NewsRepository(session, timezone=self.settings.timezone)
