@@ -89,6 +89,64 @@ async def test_publish_period_does_not_duplicate_rejected_news_on_rerun() -> Non
 
 
 @pytest.mark.asyncio
+async def test_publish_period_does_not_create_record_when_delivery_failed() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with Session() as session:
+        session.add(
+            RawNews(
+                source_id=1,
+                title="r1",
+                summary="s",
+                url="https://example.com/1",
+                external_id="r1",
+                published_at=datetime(2026, 1, 1, 10, 0, 0),
+            )
+        )
+        await session.commit()
+
+        service = DigestService(_settings())
+        service.filter.evaluate = lambda _title, _summary: SimpleNamespace(accepted=True, reason="")
+
+        async def _fake_build_digest(_period, _accepted):  # noqa: ANN001
+            return SimpleNamespace(
+                title="digest",
+                body="body",
+                items_count=1,
+                source_breakdown={"1": 1},
+                topic_breakdown={"general": 1},
+                quality_metrics={},
+            )
+
+        send_attempts = 0
+
+        async def _fake_send_digest_messages(_bot, _title, _body):  # noqa: ANN001
+            nonlocal send_attempts
+            send_attempts += 1
+            return {"status": "partial", "total_chunks": 1, "sent_chunks": 0, "failed_chunks": [1]}
+
+        service.summarizer.build_digest = _fake_build_digest
+        service._send_digest_messages = _fake_send_digest_messages
+
+        start_dt = datetime(2026, 1, 1, 0, 0, 0)
+        end_dt = datetime(2026, 1, 2, 0, 0, 0)
+
+        await service._publish_period(bot=object(), session=session, period_type="daily", start_dt=start_dt, end_dt=end_dt)
+        await service._publish_period(bot=object(), session=session, period_type="daily", start_dt=start_dt, end_dt=end_dt)
+
+        published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
+
+        assert send_attempts == 2
+        assert published == []
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_publish_period_skips_duplicate_period_unless_manual_republish() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
