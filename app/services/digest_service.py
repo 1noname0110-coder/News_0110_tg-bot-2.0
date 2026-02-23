@@ -444,7 +444,50 @@ class DigestService:
                 fitted = token[:budget]
             break
 
-        return fitted.strip() if fitted.strip() else chunk[:budget].strip()
+        fallback = fitted.strip() if fitted.strip() else chunk[:budget].strip()
+        safe_fallback = self._rollback_unbalanced_anchor_tail(fallback)
+
+        if safe_fallback:
+            return safe_fallback
+
+        plain_text = self._to_plain_text(chunk)
+        return self._truncate_text(plain_text, budget).strip()
+
+    def _rollback_unbalanced_anchor_tail(self, text: str) -> str:
+        candidate = text.strip()
+        if not candidate:
+            return ""
+        if self._has_balanced_anchor_tags(candidate):
+            return candidate
+
+        open_tag_pattern = re.compile(r"<a\b[^>]*>", flags=re.IGNORECASE)
+        close_tag_pattern = re.compile(r"</a>", flags=re.IGNORECASE)
+
+        opens = list(open_tag_pattern.finditer(candidate))
+        closes = list(close_tag_pattern.finditer(candidate))
+        if not opens:
+            return self._trim_dangling_html(candidate)
+
+        if len(opens) > len(closes):
+            unmatched_open = opens[len(closes)]
+            candidate = candidate[: unmatched_open.start()].rstrip()
+
+        return self._trim_dangling_html(candidate)
+
+    @staticmethod
+    def _trim_dangling_html(text: str) -> str:
+        trimmed = text.strip()
+        dangling_start = trimmed.rfind("<")
+        dangling_end = trimmed.rfind(">")
+        if dangling_start > dangling_end:
+            trimmed = trimmed[:dangling_start].rstrip()
+        return trimmed
+
+    @staticmethod
+    def _to_plain_text(text: str) -> str:
+        without_tags = re.sub(r"<[^>]+>", " ", text)
+        normalized = re.sub(r"\s+", " ", without_tags).strip()
+        return normalized or "digest"
 
     @staticmethod
     def _truncate_text(text: str, limit: int) -> str:

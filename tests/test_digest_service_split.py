@@ -58,6 +58,25 @@ def test_split_body_when_single_item_near_limit() -> None:
     assert all(service._has_balanced_anchor_tags(chunk) for chunk in chunks)
 
 
+def test_fit_chunk_to_budget_rolls_back_unbalanced_anchor_and_keeps_safe_text() -> None:
+    settings = _settings()
+    service = DigestService(settings)
+
+    chunk = (
+        "Короткое вступление перед ссылкой "
+        "<a href='https://example.com/long'>"
+        f"{'очень-длинный-текст-' * 40}"
+        "</a>"
+    )
+
+    result = service._fit_chunk_to_budget(chunk, budget=80)
+
+    assert result
+    assert len(result) <= 80
+    assert "Короткое вступление" in result
+    assert service._has_balanced_anchor_tags(result)
+
+
 @pytest.mark.asyncio
 async def test_send_digest_messages_adds_continuation_headers() -> None:
     settings = _settings()
