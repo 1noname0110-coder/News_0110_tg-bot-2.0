@@ -42,6 +42,34 @@ def test_source_create_returns_none_on_invalid_source_type() -> None:
     session.commit.assert_not_awaited()
 
 
+
+
+def test_source_create_returns_none_on_invalid_url() -> None:
+    session = MagicMock()
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    repo = SourceRepository(session)
+    result = asyncio.run(repo.create(source_type="rss", name="invalid", url="ftp://example.com"))
+
+    assert result is None
+    session.add.assert_not_called()
+    session.commit.assert_not_awaited()
+
+
+def test_source_create_normalizes_url_before_save() -> None:
+    session = MagicMock()
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    repo = SourceRepository(session)
+    result = asyncio.run(repo.create(source_type="rss", name="ok", url=" HTTPS://Example.COM/path "))
+
+    assert result is not None
+    added_source = session.add.call_args.args[0]
+    assert added_source.url == "https://example.com/path"
+
 def test_aggregate_quality_sums_new_funnel_metrics() -> None:
     start = datetime(2024, 1, 1, 0, 0, 0)
     end = datetime(2024, 1, 1, 23, 59, 59)
