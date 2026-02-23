@@ -39,9 +39,39 @@ class NewsCollector:
 
     async def _fetch_rss(self, source: Source) -> list[dict]:
         started_at = asyncio.get_running_loop().time()
-        parsed = await asyncio.to_thread(feedparser.parse, source.url)
-        elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
-        logger.info("RSS источник %s обработан за %.1fms", source.url, elapsed_ms)
+        attempts = 3
+        retry_delay_seconds = 0.2
+        parsed = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds) as client:
+                    response = await client.get(source.url)
+                    response.raise_for_status()
+                parsed = await asyncio.to_thread(feedparser.parse, response.content)
+                elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+                logger.info(
+                    "RSS источник %s обработан за %.1fms status=success attempts=%s",
+                    source.url,
+                    elapsed_ms,
+                    attempt,
+                )
+                break
+            except httpx.HTTPError:
+                if attempt == attempts:
+                    elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+                    logger.exception(
+                        "RSS источник %s обработан за %.1fms status=fail attempts=%s",
+                        source.url,
+                        elapsed_ms,
+                        attempt,
+                    )
+                    raise
+                await asyncio.sleep(retry_delay_seconds * attempt)
+
+        if parsed is None:
+            return []
+
         out = []
         for entry in parsed.entries[:80]:
             ext_id = (entry.get("id") or entry.get("link") or entry.get("title") or "")

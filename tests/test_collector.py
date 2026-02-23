@@ -23,6 +23,7 @@ def _source() -> Source:
 class _FakeResponse:
     def __init__(self, text: str):
         self.text = text
+        self.content = text.encode("utf-8")
 
     def raise_for_status(self) -> None:
         return None
@@ -115,31 +116,94 @@ async def test_fetch_site_reordered_articles_keep_external_id_without_links(monk
 
 
 @pytest.mark.asyncio
-async def test_fetch_rss_uses_to_thread_for_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_rss_uses_http_content_for_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     collector = NewsCollector(_settings())
     source = Source(id=2, name="RSS", type="rss", url="https://example.com/rss", meta={})
 
     class _FakeParsed:
         entries = []
 
-    called = {"parse": False, "to_thread": False}
+    called = {"parse": False, "to_thread": False, "http_get": False}
 
-    def fake_parse(url: str):
+    def fake_parse(payload: bytes):
         called["parse"] = True
-        assert url == source.url
+        assert payload == b"<rss></rss>"
         return _FakeParsed()
 
     async def fake_to_thread(func, *args, **kwargs):
         called["to_thread"] = True
         return func(*args, **kwargs)
 
+    class _RssClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str) -> _FakeResponse:
+            called["http_get"] = True
+            assert url == source.url
+            return _FakeResponse("<rss></rss>")
+
     monkeypatch.setattr("app.services.collector.feedparser.parse", fake_parse)
     monkeypatch.setattr("app.services.collector.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _RssClient(*args, **kwargs))
 
     items = await collector._fetch_rss(source)
 
     assert items == []
-    assert called == {"parse": True, "to_thread": True}
+    assert called == {"parse": True, "to_thread": True, "http_get": True}
+
+
+@pytest.mark.asyncio
+async def test_fetch_rss_retries_after_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    collector = NewsCollector(_settings())
+    source = Source(id=2, name="RSS", type="rss", url="https://example.com/rss", meta={})
+
+    class _FakeParsed:
+        entries = [
+            {
+                "id": "news-1",
+                "title": "Новость",
+                "summary": "Описание",
+                "link": "https://example.com/news/1",
+            }
+        ]
+
+    attempts = {"count": 0}
+
+    class _RetryClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str) -> _FakeResponse:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise httpx.ConnectError("network error")
+            return _FakeResponse("<rss></rss>")
+
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _RetryClient(*args, **kwargs))
+    monkeypatch.setattr("app.services.collector.feedparser.parse", lambda payload: _FakeParsed())
+    monkeypatch.setattr("app.services.collector.asyncio.to_thread", fake_to_thread)
+
+    items = await collector.collect_from_source(source)
+
+    assert attempts["count"] == 2
+    assert len(items) == 1
+    assert items[0]["external_id"] == "news-1"
 
 def test_parse_dt_rfc822_to_utc_naive() -> None:
     collector = NewsCollector(_settings())
