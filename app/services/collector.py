@@ -228,10 +228,24 @@ class NewsCollector:
                 response = await client.get(url)
                 response.raise_for_status()
                 return response, attempt
-            except httpx.HTTPError:
+            except (httpx.TransportError, httpx.TimeoutException):
                 if attempt == attempts:
                     raise
                 await asyncio.sleep(base_delay * attempt)
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code >= 500 or status_code == 429:
+                    if attempt == attempts:
+                        raise
+                    await asyncio.sleep(base_delay * attempt)
+                    continue
+
+                logger.error(
+                    "Неретраимая HTTP ошибка status_code=%s url=%s",
+                    status_code,
+                    str(exc.request.url),
+                )
+                raise
 
         raise RuntimeError("Retry loop terminated unexpectedly")
 
