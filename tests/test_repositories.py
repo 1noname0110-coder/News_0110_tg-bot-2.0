@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 
 from app.db import Base
 from app.models import PublishedNews, RawNews, RejectedNews
-from app.repositories import NewsRepository, SourceRepository
+from app.repositories import NewsRepository, SourceRepository, normalize_http_url
 
 
 def test_source_create_returns_none_on_duplicate_name() -> None:
@@ -70,6 +70,10 @@ def test_source_create_normalizes_url_before_save() -> None:
     assert result is not None
     added_source = session.add.call_args.args[0]
     assert added_source.url == "https://example.com/path"
+
+
+def test_normalize_http_url_removes_fragment() -> None:
+    assert normalize_http_url("https://example.com/path#section") == "https://example.com/path"
 
 def test_aggregate_quality_sums_new_funnel_metrics() -> None:
     start = datetime(2024, 1, 1, 0, 0, 0)
