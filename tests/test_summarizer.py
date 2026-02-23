@@ -1,8 +1,11 @@
 import os
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 os.environ.setdefault("BOT_TOKEN", "test-token")
 os.environ.setdefault("CHANNEL_ID", "@test_channel")
+
+import pytest
 
 from app.config import Settings
 from app.models import RawNews
@@ -192,3 +195,100 @@ def test_build_extractive_publish_all_important_false_keeps_default_cap() -> Non
     digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 17)})
 
     assert digest.items_count == 12
+
+
+@pytest.mark.asyncio
+async def test_build_digest_with_llm_parses_items_and_metrics() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+
+    class FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            content = (
+                "ЗАГОЛОВОК: Дайджест\n"
+                "ПУНКТЫ:\n"
+                "1) [Экономика] Рост экспорта в АТР\n"
+                "Источник: https://example.com/1\n\n"
+                "2) [Политика] Парламент принял пакет поправок\n"
+                "Источник: https://example.com/2\n\n"
+                "3) [Международка] Подписано новое соглашение\n"
+                "Источник: https://example.com/3\n\n"
+                "4) [Технологии] Ускорен запуск спутниковой программы\n"
+                "Источник: https://example.com/4\n\n"
+                "5) [Энергетика] Согласованы новые поставки СПГ\n"
+                "Источник: https://example.com/5"
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            )
+
+    s.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    items = [
+        RawNews(
+            id=i,
+            source_id=i,
+            title=f"Новость {i}",
+            summary=f"Описание {i}",
+            url=f"https://source.example/{i}",
+            external_id=f"ext-{i}",
+            published_at=base + timedelta(minutes=i),
+        )
+        for i in range(1, 6)
+    ]
+
+    digest = await s.build_digest("daily", items)
+
+    assert digest.title == "Дайджест"
+    assert digest.items_count == 5
+    assert digest.quality_metrics["selected"] == 5
+    assert digest.topic_breakdown
+    assert "Источник: https://example.com/1" in digest.body
+
+
+@pytest.mark.asyncio
+async def test_build_digest_with_llm_invalid_format_falls_back_to_extractive() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+
+    class FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ЗАГОЛОВОК: Плохо\nПУНКТЫ:\n- нет ссылок"))],
+            )
+
+    s.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    items = [
+        RawNews(
+            id=i,
+            source_id=i,
+            title=title,
+            summary=(
+                f"{topic} {i}: расширенное описание реформ и отраслевых последствий с уникальными параметрами {i * 7}. "
+                "Показатели подтверждены ведомствами и профильными ассоциациями."
+            ),
+            url=f"https://valid.example/{i}",
+            external_id=f"fallback-{i}",
+            published_at=base + timedelta(minutes=i),
+        )
+        for i, (topic, title) in enumerate(
+            [
+                ("Экономика", "Минфин утвердил план бюджетной корректировки"),
+                ("Политика", "Парламент одобрил пакет институциональных реформ"),
+                ("Транспорт", "Правительство запустило программу модернизации портов"),
+                ("Энергетика", "Оператор сети объявил о расширении генерирующих мощностей"),
+                ("Технологии", "Ведомство согласовало новый регламент по ИИ-сервисам"),
+            ],
+            start=1,
+        )
+    ]
+
+    digest = await s.build_digest("daily", items)
+
+    assert digest.items_count > 0
+    assert digest.quality_metrics["selected"] == digest.items_count
+    assert "<a href=\"https://valid.example/1\">Источник</a>" in digest.body
+    assert sum(digest.topic_breakdown.values()) == digest.items_count
