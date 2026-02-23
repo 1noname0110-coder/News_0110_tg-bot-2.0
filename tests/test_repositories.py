@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections import Counter
 from unittest.mock import AsyncMock, MagicMock
 
 os.environ.setdefault("BOT_TOKEN", "test-token")
@@ -117,14 +118,19 @@ def test_aggregate_quality_sums_new_funnel_metrics() -> None:
         ),
     ]
 
-    metrics = NewsRepository._aggregate_quality(rows, raw_count=8, rejected_count=2)
+    metrics = NewsRepository._aggregate_quality(
+        rows,
+        raw_count=8,
+        rejected_count=2,
+        rejected_reason_counts=Counter({"low_relevance": 3}),
+    )
 
     assert metrics["fetched_from_db_total"] == 8
     assert metrics["rejected_by_filter_total"] == 2
     assert metrics["removed_as_duplicates_total"] == 2
     assert metrics["removed_by_topic_limit_total"] == 1
     assert metrics["published_items_total"] == 3
-    assert metrics["rejection_reasons"] == {"low_relevance": 1, "noise": 1}
+    assert metrics["rejection_reasons"] == {"low_relevance": 4, "noise": 1}
 
 
 def test_aggregate_quality_uses_legacy_quality_keys_as_fallback() -> None:
@@ -323,6 +329,70 @@ def test_compute_weekly_stats_uses_local_timezone_boundaries() -> None:
             assert stats.rejected_count == 2
             assert stats.source_usage == {"1": 1, "2": 1}
             assert stats.rejection_breakdown == {"1": 1, "2": 1}
+
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_compute_daily_stats_includes_rejection_reasons_without_publications() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        day_start_utc = datetime(2026, 1, 7, 14, 0, 0)
+
+        async with Session() as session:
+            session.add_all(
+                [
+                    RejectedNews(raw_news_id=301, source_id=1, reason="noise", rejected_at=day_start_utc + timedelta(hours=1)),
+                    RejectedNews(raw_news_id=302, source_id=2, reason="low_relevance", rejected_at=day_start_utc + timedelta(hours=2)),
+                    RejectedNews(raw_news_id=303, source_id=2, reason="noise", rejected_at=day_start_utc + timedelta(hours=3)),
+                ]
+            )
+            await session.commit()
+
+            repo = NewsRepository(session, timezone="Asia/Vladivostok")
+            stats = await repo.compute_daily_stats(date(2026, 1, 8))
+
+            assert stats.published_count == 0
+            assert stats.rejected_count == 3
+            assert stats.quality_metrics["rejection_reasons"] == {"noise": 2, "low_relevance": 1}
+
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_compute_weekly_stats_includes_rejection_reasons_without_publications() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        week_start_utc = datetime(2026, 1, 4, 14, 0, 0)
+
+        async with Session() as session:
+            session.add_all(
+                [
+                    RejectedNews(raw_news_id=401, source_id=1, reason="spam", rejected_at=week_start_utc + timedelta(days=1)),
+                    RejectedNews(raw_news_id=402, source_id=1, reason="spam", rejected_at=week_start_utc + timedelta(days=2)),
+                    RejectedNews(raw_news_id=403, source_id=2, reason="duplicate", rejected_at=week_start_utc + timedelta(days=3)),
+                ]
+            )
+            await session.commit()
+
+            repo = NewsRepository(session, timezone="Asia/Vladivostok")
+            stats = await repo.compute_weekly_stats(date(2026, 1, 5))
+
+            assert stats.published_count == 0
+            assert stats.rejected_count == 3
+            assert stats.quality_metrics["rejection_reasons"] == {"spam": 2, "duplicate": 1}
 
         await engine.dispose()
 

@@ -229,13 +229,14 @@ class NewsRepository:
         )
         rejected_rows = list(rej_q.scalars().all())
         reject_by_source = Counter(str(r.source_id) for r in rejected_rows)
+        reject_reasons = Counter(str(r.reason) for r in rejected_rows)
 
         pub_q = await self.session.execute(
             select(PublishedNews).where(and_(PublishedNews.published_at >= start, PublishedNews.published_at < end))
         )
         published_rows = list(pub_q.scalars().all())
 
-        quality = self._aggregate_quality(published_rows, len(raws), len(rejected_rows))
+        quality = self._aggregate_quality(published_rows, len(raws), len(rejected_rows), reject_reasons)
 
         stats = await self.session.scalar(select(DailyStats).where(DailyStats.stat_date == stat_date))
         if not stats:
@@ -281,13 +282,14 @@ class NewsRepository:
         )
         rejected_rows = list(rej_q.scalars().all())
         reject_by_source = Counter(str(r.source_id) for r in rejected_rows)
+        reject_reasons = Counter(str(r.reason) for r in rejected_rows)
 
         pub_q = await self.session.execute(
             select(PublishedNews).where(and_(PublishedNews.published_at >= start, PublishedNews.published_at < end))
         )
         published_rows = list(pub_q.scalars().all())
 
-        quality = self._aggregate_quality(published_rows, len(raws), len(rejected_rows))
+        quality = self._aggregate_quality(published_rows, len(raws), len(rejected_rows), reject_reasons)
 
         stats = await self.session.scalar(select(WeeklyStats).where(WeeklyStats.week_start == week_start))
         if not stats:
@@ -314,7 +316,12 @@ class NewsRepository:
         )
 
     @staticmethod
-    def _aggregate_quality(published_rows: list[PublishedNews], raw_count: int, rejected_count: int) -> dict:
+    def _aggregate_quality(
+        published_rows: list[PublishedNews],
+        raw_count: int,
+        rejected_count: int,
+        rejected_reason_counts: Counter[str] | None = None,
+    ) -> dict:
         selected = 0
         deduplicated = 0
         duplicates_removed = 0
@@ -324,7 +331,7 @@ class NewsRepository:
         removed_by_topic_limit = 0
         published_items = 0
         topic_distribution: Counter[str] = Counter()
-        rejection_reasons: Counter[str] = Counter()
+        rejection_reasons: Counter[str] = Counter(rejected_reason_counts or {})
 
         for row in published_rows:
             qm = row.quality_metrics or {}
