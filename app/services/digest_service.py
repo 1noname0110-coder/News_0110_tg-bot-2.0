@@ -203,6 +203,17 @@ class DigestService:
         send_result = await self._send_digest_messages(bot, digest.title, digest.body)
         quality_metrics["delivery"] = send_result
 
+        delivery_success = send_result.get("status") == "success" and int(send_result.get("sent_chunks", 0)) > 0
+        if not delivery_success:
+            logger.error(
+                "Публикация дайджеста отменена: доставка неуспешна period_type=%s period_start=%s period_end=%s send_result=%s",
+                period_type,
+                start_dt,
+                end_dt,
+                send_result,
+            )
+            return
+
         await news_repo.publish_digest(
             period_type=period_type,
             period_start=start_dt,
