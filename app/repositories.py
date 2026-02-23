@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
@@ -49,8 +50,9 @@ class SourceRepository:
 
 
 class NewsRepository:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, timezone: str = "UTC"):
         self.session = session
+        self.timezone = timezone
 
     async def add_raw_news(self, items: Iterable[dict]) -> list[RawNews]:
         stored: list[RawNews] = []
@@ -115,8 +117,10 @@ class NewsRepository:
         return row
 
     async def compute_daily_stats(self, stat_date: date) -> DailyStats:
-        start = datetime.combine(stat_date, datetime.min.time())
-        end = start + timedelta(days=1)
+        start, end = self._local_period_to_utc_bounds(
+            datetime.combine(stat_date, datetime.min.time()),
+            timedelta(days=1),
+        )
 
         raws = await self.fetch_period_news(start, end)
         raw_by_source = Counter(str(r.source_id) for r in raws)
@@ -150,8 +154,10 @@ class NewsRepository:
         return stats
 
     async def compute_weekly_stats(self, week_start: date) -> WeeklyStats:
-        start = datetime.combine(week_start, datetime.min.time())
-        end = start + timedelta(days=7)
+        start, end = self._local_period_to_utc_bounds(
+            datetime.combine(week_start, datetime.min.time()),
+            timedelta(days=7),
+        )
 
         raws = await self.fetch_period_news(start, end)
         raw_by_source = Counter(str(r.source_id) for r in raws)
@@ -183,6 +189,15 @@ class NewsRepository:
         await self.session.commit()
         await self.session.refresh(stats)
         return stats
+
+    def _local_period_to_utc_bounds(self, start_local_naive: datetime, length: timedelta) -> tuple[datetime, datetime]:
+        tz = ZoneInfo(self.timezone)
+        start_local = start_local_naive.replace(tzinfo=tz)
+        end_local = start_local + length
+        return (
+            start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+            end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+        )
 
     @staticmethod
     def _aggregate_quality(published_rows: list[PublishedNews], raw_count: int, rejected_count: int) -> dict:

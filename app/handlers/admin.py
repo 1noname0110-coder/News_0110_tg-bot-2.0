@@ -87,7 +87,7 @@ async def stat_day(message: Message, settings: Settings) -> None:
     today = datetime.now(tz).date()
 
     async with AsyncSessionLocal() as session:
-        repo = NewsRepository(session)
+        repo = NewsRepository(session, timezone=settings.timezone)
         stats = await repo.compute_daily_stats(today)
 
     total_sources = sum(stats.source_usage.values()) or 1
@@ -124,7 +124,7 @@ async def stat_week(message: Message, settings: Settings) -> None:
     week_start, week_end = get_calendar_week_bounds(now_local)
 
     async with AsyncSessionLocal() as session:
-        repo = NewsRepository(session)
+        repo = NewsRepository(session, timezone=settings.timezone)
         stats = await repo.compute_weekly_stats(week_start.date())
 
     total_sources = sum(stats.source_usage.values()) or 1
@@ -160,7 +160,7 @@ async def quality(message: Message, settings: Settings) -> None:
     today = datetime.now(tz).date()
 
     async with AsyncSessionLocal() as session:
-        repo = NewsRepository(session)
+        repo = NewsRepository(session, timezone=settings.timezone)
         stats = await repo.compute_daily_stats(today)
 
     qm = stats.quality_metrics or {}
