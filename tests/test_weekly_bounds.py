@@ -161,4 +161,55 @@ async def test_statweek_shows_same_calendar_week_bounds(monkeypatch: pytest.Monk
 
     assert str(captured_week_start["value"]) == "2026-01-05"
     assert answers
-    assert "Статистика недели с 05.01.2026 00:00 по 12.01.2026 00:00" in answers[0]
+    assert "Статистика недели [05.01.2026 00:00, 12.01.2026 00:00)" in answers[0]
+
+
+@pytest.mark.asyncio
+async def test_statweek_live_uses_current_moment_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings()
+
+    fixed_now = datetime(2026, 1, 7, 15, 30, tzinfo=ZoneInfo(settings.timezone))
+    _FixedDateTime.fixed_now = fixed_now
+    monkeypatch.setattr("app.handlers.admin.datetime", _FixedDateTime)
+
+    captured: dict[str, object] = {}
+
+    class _FakeRepo:
+        def __init__(self, _session, timezone="UTC"):
+            self.timezone = timezone
+
+        async def compute_weekly_stats_live(self, week_start, now_local_naive):
+            captured["week_start"] = week_start
+            captured["now_local_naive"] = now_local_naive
+            return SimpleNamespace(
+                published_count=3,
+                rejected_count=1,
+                source_usage={"1": 2},
+                rejection_breakdown={"1": 1},
+            )
+
+    class _FakeSessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return None
+
+    answers: list[str] = []
+
+    class _FakeMessage:
+        text = "/statweek_live"
+        from_user = SimpleNamespace(id=42)
+
+        async def answer(self, text: str) -> None:
+            answers.append(text)
+
+    monkeypatch.setattr(admin, "AsyncSessionLocal", _FakeSessionCtx)
+    monkeypatch.setattr(admin, "NewsRepository", _FakeRepo)
+
+    await admin.stat_week_live(_FakeMessage(), settings)
+
+    assert str(captured["week_start"]) == "2026-01-05"
+    assert str(captured["now_local_naive"]) == "2026-01-07 15:30:00"
+    assert answers
+    assert "Статистика недели [05.01.2026 00:00, 07.01.2026 15:30)" in answers[0]

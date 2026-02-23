@@ -146,7 +146,46 @@ async def stat_week(message: Message, settings: Settings) -> None:
     ] or ["Отклонений нет"]
 
     text = (
-        f"Статистика недели с {week_start:%d.%m.%Y %H:%M} по {week_end:%d.%m.%Y %H:%M}\n"
+        f"Статистика недели [{week_start:%d.%m.%Y %H:%M}, {week_end:%d.%m.%Y %H:%M})\n"
+        f"(фиксированный календарный полуинтервал)\n"
+        f"Опубликовано сводок: {stats.published_count}\n"
+        f"Отклонено новостей: {stats.rejected_count}\n\n"
+        f"Использование источников:\n" + "\n".join(usage_lines) + "\n\n"
+        f"Отклонения по источникам:\n" + "\n".join(reject_lines)
+    )
+    await message.answer(text)
+
+
+@router.message(Command("statweek_live"))
+async def stat_week_live(message: Message, settings: Settings) -> None:
+    if not _is_admin(message, settings):
+        await message.answer("Недостаточно прав.")
+        return
+
+    tz = ZoneInfo(settings.timezone)
+    now_local = datetime.now(tz)
+    week_start, _ = get_calendar_week_bounds(now_local)
+
+    async with AsyncSessionLocal() as session:
+        repo = NewsRepository(session, timezone=settings.timezone)
+        stats = await repo.compute_weekly_stats_live(week_start.date(), now_local.replace(tzinfo=None))
+
+    total_sources = sum(stats.source_usage.values()) or 1
+    total_rejections = sum(stats.rejection_breakdown.values()) or 1
+
+    usage_lines = [
+        f"Источник {sid}: {count} ({count / total_sources:.0%})"
+        for sid, count in sorted(stats.source_usage.items(), key=lambda x: x[1], reverse=True)
+    ] or ["Нет данных по источникам"]
+
+    reject_lines = [
+        f"Источник {sid}: {count} ({count / total_rejections:.0%})"
+        for sid, count in sorted(stats.rejection_breakdown.items(), key=lambda x: x[1], reverse=True)
+    ] or ["Отклонений нет"]
+
+    text = (
+        f"Статистика недели [{week_start:%d.%m.%Y %H:%M}, {now_local:%d.%m.%Y %H:%M})\n"
+        f"(с начала недели по текущий момент)\n"
         f"Опубликовано сводок: {stats.published_count}\n"
         f"Отклонено новостей: {stats.rejected_count}\n\n"
         f"Использование источников:\n" + "\n".join(usage_lines) + "\n\n"
