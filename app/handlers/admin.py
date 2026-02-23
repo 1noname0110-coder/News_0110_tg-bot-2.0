@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,9 +12,16 @@ from aiogram.types import Message
 from app.config import Settings
 from app.db import AsyncSessionLocal
 from app.periods import get_calendar_week_bounds
-from app.repositories import ALLOWED_SOURCE_TYPES, NewsRepository, SourceRepository, normalize_http_url
+from app.repositories import (
+    ALLOWED_SOURCE_TYPES,
+    NewsRepository,
+    SourceCreateStatus,
+    SourceRepository,
+    normalize_http_url,
+)
 
 router = Router(name="admin")
+logger = logging.getLogger(__name__)
 
 
 def _is_admin(message: Message, settings: Settings) -> bool:
@@ -55,13 +63,24 @@ async def add_source(message: Message, settings: Settings) -> None:
 
     async with AsyncSessionLocal() as session:
         repo = SourceRepository(session)
-        source = await repo.create(source_type=source_type, name=name, url=url, meta=meta)
+        result = await repo.create(source_type=source_type, name=name, url=url, meta=meta)
 
-    if not source:
+    if result.status == SourceCreateStatus.DUPLICATE_NAME:
         await message.answer("Источник с таким именем уже существует.")
         return
+    if result.status != SourceCreateStatus.CREATED or result.source is None:
+        logger.exception(
+            "Ошибка сохранения источника: status=%s type=%s name=%s url=%s",
+            result.status,
+            source_type,
+            name,
+            url,
+            exc_info=result.error,
+        )
+        await message.answer("Ошибка сохранения источника, проверьте логи")
+        return
 
-    await message.answer(f"Источник добавлен: #{source.id} {source.name} ({source.type})")
+    await message.answer(f"Источник добавлен: #{result.source.id} {result.source.name} ({result.source.type})")
 
 
 @router.message(Command("removesource"))

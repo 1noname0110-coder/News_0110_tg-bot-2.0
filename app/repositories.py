@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from enum import Enum
 from typing import Iterable
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
@@ -13,6 +15,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import DailyStats, PublishedNews, RawNews, RejectedNews, Source, WeeklyStats
 
 ALLOWED_SOURCE_TYPES = {"rss", "site", "api"}
+
+
+class SourceCreateStatus(str, Enum):
+    CREATED = "created"
+    INVALID_SOURCE_TYPE = "invalid_source_type"
+    INVALID_URL = "invalid_url"
+    DUPLICATE_NAME = "duplicate_name"
+    DB_ERROR = "db_error"
+
+
+@dataclass(slots=True)
+class SourceCreateResult:
+    status: SourceCreateStatus
+    source: Source | None = None
+    error: Exception | None = None
 
 
 def normalize_http_url(url: str) -> str | None:
@@ -67,23 +84,38 @@ class SourceRepository:
         result = await self.session.execute(select(Source).order_by(Source.id.asc()))
         return list(result.scalars().all())
 
-    async def create(self, source_type: str, name: str, url: str, meta: dict | None = None) -> Source | None:
+    @staticmethod
+    def _is_duplicate_name_error(error: IntegrityError) -> bool:
+        details = " ".join(
+            [
+                str(getattr(error, "orig", "") or ""),
+                str(getattr(error, "statement", "") or ""),
+            ]
+        ).lower()
+        return any(marker in details for marker in ("sources.name", "uq_sources_name", "unique"))
+
+    async def create(self, source_type: str, name: str, url: str, meta: dict | None = None) -> SourceCreateResult:
         if source_type not in ALLOWED_SOURCE_TYPES:
-            return None
+            return SourceCreateResult(status=SourceCreateStatus.INVALID_SOURCE_TYPE)
 
         normalized_url = normalize_http_url(url)
         if not normalized_url:
-            return None
+            return SourceCreateResult(status=SourceCreateStatus.INVALID_URL)
 
         source = Source(type=source_type, name=name, url=normalized_url, meta=meta or {})
         self.session.add(source)
         try:
             await self.session.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             await self.session.rollback()
-            return None
+            if self._is_duplicate_name_error(exc):
+                return SourceCreateResult(status=SourceCreateStatus.DUPLICATE_NAME, error=exc)
+            return SourceCreateResult(status=SourceCreateStatus.DB_ERROR, error=exc)
+        except Exception as exc:
+            await self.session.rollback()
+            return SourceCreateResult(status=SourceCreateStatus.DB_ERROR, error=exc)
         await self.session.refresh(source)
-        return source
+        return SourceCreateResult(status=SourceCreateStatus.CREATED, source=source)
 
     async def remove(self, source_id: int) -> bool:
         source = await self.session.get(Source, source_id)

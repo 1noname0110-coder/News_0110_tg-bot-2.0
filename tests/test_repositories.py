@@ -14,23 +14,52 @@ from datetime import date, datetime, timedelta
 
 from app.db import Base
 from app.models import PublishedNews, RawNews, RejectedNews
-from app.repositories import NewsRepository, SourceRepository, normalize_http_url
+from app.repositories import NewsRepository, SourceCreateStatus, SourceRepository, normalize_http_url
 
 
-def test_source_create_returns_none_on_duplicate_name() -> None:
+def test_source_create_returns_duplicate_status_on_duplicate_name() -> None:
     session = MagicMock()
     session.add = MagicMock()
-    session.commit = AsyncMock(side_effect=IntegrityError("insert", {"name": "dup"}, Exception("uniq")))
+    session.commit = AsyncMock(
+        side_effect=IntegrityError(
+            "insert into sources(name) values (:name)",
+            {"name": "dup"},
+            Exception("UNIQUE constraint failed: sources.name"),
+        )
+    )
     session.rollback = AsyncMock()
 
     repo = SourceRepository(session)
     result = asyncio.run(repo.create(source_type="rss", name="dup", url="https://example.com"))
 
-    assert result is None
+    assert result.status == SourceCreateStatus.DUPLICATE_NAME
+    assert result.source is None
+    assert isinstance(result.error, IntegrityError)
     session.rollback.assert_awaited_once()
 
 
-def test_source_create_returns_none_on_invalid_source_type() -> None:
+def test_source_create_returns_db_error_status_on_non_duplicate_integrity_error() -> None:
+    session = MagicMock()
+    session.add = MagicMock()
+    session.commit = AsyncMock(
+        side_effect=IntegrityError(
+            "insert into sources(name, url) values (:name, :url)",
+            {"name": "test", "url": "https://example.com"},
+            Exception("CHECK constraint failed: some_check"),
+        )
+    )
+    session.rollback = AsyncMock()
+
+    repo = SourceRepository(session)
+    result = asyncio.run(repo.create(source_type="rss", name="test", url="https://example.com"))
+
+    assert result.status == SourceCreateStatus.DB_ERROR
+    assert result.source is None
+    assert isinstance(result.error, IntegrityError)
+    session.rollback.assert_awaited_once()
+
+
+def test_source_create_returns_invalid_source_type_status() -> None:
     session = MagicMock()
     session.add = MagicMock()
     session.commit = AsyncMock()
@@ -38,14 +67,14 @@ def test_source_create_returns_none_on_invalid_source_type() -> None:
     repo = SourceRepository(session)
     result = asyncio.run(repo.create(source_type="telegram", name="invalid", url="https://example.com"))
 
-    assert result is None
+    assert result.status == SourceCreateStatus.INVALID_SOURCE_TYPE
     session.add.assert_not_called()
     session.commit.assert_not_awaited()
 
 
 
 
-def test_source_create_returns_none_on_invalid_url() -> None:
+def test_source_create_returns_invalid_url_status() -> None:
     session = MagicMock()
     session.add = MagicMock()
     session.commit = AsyncMock()
@@ -53,7 +82,7 @@ def test_source_create_returns_none_on_invalid_url() -> None:
     repo = SourceRepository(session)
     result = asyncio.run(repo.create(source_type="rss", name="invalid", url="ftp://example.com"))
 
-    assert result is None
+    assert result.status == SourceCreateStatus.INVALID_URL
     session.add.assert_not_called()
     session.commit.assert_not_awaited()
 
@@ -67,7 +96,8 @@ def test_source_create_normalizes_url_before_save() -> None:
     repo = SourceRepository(session)
     result = asyncio.run(repo.create(source_type="rss", name="ok", url=" HTTPS://Example.COM/path "))
 
-    assert result is not None
+    assert result.status == SourceCreateStatus.CREATED
+    assert result.source is not None
     added_source = session.add.call_args.args[0]
     assert added_source.url == "https://example.com/path"
 
