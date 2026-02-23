@@ -232,3 +232,118 @@ def test_parse_dt_invalid_returns_current_utc_naive() -> None:
 
     assert dt.tzinfo is None
     assert before <= dt <= after
+
+
+@pytest.mark.asyncio
+async def test_fetch_api_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    collector = NewsCollector(_settings())
+    source = Source(id=3, name="API", type="api", url="https://example.com/api", meta={})
+
+    attempts = {"count": 0}
+
+    class _ApiResponse:
+        text = '{"items": []}'
+        content = text.encode("utf-8")
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "items": [
+                    {
+                        "id": "item-1",
+                        "title": "API title",
+                        "summary": "API summary",
+                        "url": "https://example.com/item/1",
+                    }
+                ]
+            }
+
+    class _ApiRetryClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise httpx.ConnectError("temporary network issue")
+            return _ApiResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _ApiRetryClient(*args, **kwargs))
+
+    items = await collector.collect_from_source(source)
+
+    assert attempts["count"] == 2
+    assert len(items) == 1
+    assert items[0]["external_id"] == "item-1"
+
+
+@pytest.mark.asyncio
+async def test_collect_from_source_returns_empty_on_retry_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    collector = NewsCollector(_settings())
+    source = _source()
+
+    attempts = {"count": 0}
+
+    class _AlwaysFailClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str):
+            attempts["count"] += 1
+            raise httpx.ConnectError("network down")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _AlwaysFailClient(*args, **kwargs))
+
+    items = await collector.collect_from_source(source)
+
+    assert attempts["count"] == 3
+    assert items == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_api_invalid_json_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    collector = NewsCollector(_settings())
+    source = Source(id=3, name="API", type="api", url="https://example.com/api", meta={})
+
+    class _InvalidJsonResponse:
+        text = "not-json"
+        content = text.encode("utf-8")
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            raise ValueError("invalid json")
+
+    class _ApiClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url: str):
+            return _InvalidJsonResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _ApiClient(*args, **kwargs))
+
+    items = await collector.collect_from_source(source)
+
+    assert items == []

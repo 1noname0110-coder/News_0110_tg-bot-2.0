@@ -39,38 +39,27 @@ class NewsCollector:
 
     async def _fetch_rss(self, source: Source) -> list[dict]:
         started_at = asyncio.get_running_loop().time()
-        attempts = 3
-        retry_delay_seconds = 0.2
-        parsed = None
+        attempts_used = 0
+        try:
+            response, attempts_used = await self._get_with_retry(source.url)
+            parsed = await asyncio.to_thread(feedparser.parse, response.content)
+        except Exception:
+            elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+            logger.exception(
+                "RSS источник %s обработан за %.1fms status=fail attempts=%s",
+                source.url,
+                elapsed_ms,
+                attempts_used,
+            )
+            raise
 
-        for attempt in range(1, attempts + 1):
-            try:
-                async with httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds) as client:
-                    response = await client.get(source.url)
-                    response.raise_for_status()
-                parsed = await asyncio.to_thread(feedparser.parse, response.content)
-                elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
-                logger.info(
-                    "RSS источник %s обработан за %.1fms status=success attempts=%s",
-                    source.url,
-                    elapsed_ms,
-                    attempt,
-                )
-                break
-            except httpx.HTTPError:
-                if attempt == attempts:
-                    elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
-                    logger.exception(
-                        "RSS источник %s обработан за %.1fms status=fail attempts=%s",
-                        source.url,
-                        elapsed_ms,
-                        attempt,
-                    )
-                    raise
-                await asyncio.sleep(retry_delay_seconds * attempt)
-
-        if parsed is None:
-            return []
+        elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+        logger.info(
+            "RSS источник %s обработан за %.1fms status=success attempts=%s",
+            source.url,
+            elapsed_ms,
+            attempts_used,
+        )
 
         out = []
         for entry in parsed.entries[:80]:
@@ -93,12 +82,22 @@ class NewsCollector:
         return out
 
     async def _fetch_site(self, source: Source) -> list[dict]:
+        started_at = asyncio.get_running_loop().time()
+        attempts_used = 0
         selector = source.meta.get("selector", "article")
         title_selector = source.meta.get("title_selector", "h1, h2, h3")
-        async with httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds) as client:
-            response = await client.get(source.url)
-            response.raise_for_status()
+        try:
+            response, attempts_used = await self._get_with_retry(source.url)
             soup = BeautifulSoup(response.text, "html.parser")
+        except Exception:
+            elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+            logger.exception(
+                "SITE источник %s обработан за %.1fms status=fail attempts=%s",
+                source.url,
+                elapsed_ms,
+                attempts_used,
+            )
+            raise
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         items = []
@@ -121,6 +120,13 @@ class NewsCollector:
                     "tags": [],
                 }
             )
+        elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+        logger.info(
+            "SITE источник %s обработан за %.1fms status=success attempts=%s",
+            source.url,
+            elapsed_ms,
+            attempts_used,
+        )
         return items
 
     @staticmethod
@@ -151,10 +157,29 @@ class NewsCollector:
         return re.sub(r"\s+", " ", value).strip().lower()
 
     async def _fetch_api(self, source: Source) -> list[dict]:
-        async with httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds) as client:
-            response = await client.get(source.url)
-            response.raise_for_status()
+        started_at = asyncio.get_running_loop().time()
+        attempts_used = 0
+        try:
+            response, attempts_used = await self._get_with_retry(source.url)
             payload = response.json()
+        except ValueError:
+            elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+            logger.error(
+                "API источник %s обработан за %.1fms status=fail attempts=%s reason=invalid_json_response",
+                source.url,
+                elapsed_ms,
+                attempts_used,
+            )
+            return []
+        except Exception:
+            elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+            logger.exception(
+                "API источник %s обработан за %.1fms status=fail attempts=%s",
+                source.url,
+                elapsed_ms,
+                attempts_used,
+            )
+            raise
 
         items_data = payload.get("items", payload if isinstance(payload, list) else [])
         out = []
@@ -175,7 +200,28 @@ class NewsCollector:
                     "tags": item.get("tags", []),
                 }
             )
+        elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
+        logger.info(
+            "API источник %s обработан за %.1fms status=success attempts=%s",
+            source.url,
+            elapsed_ms,
+            attempts_used,
+        )
         return out
+
+    async def _get_with_retry(self, url: str, attempts: int = 3, base_delay: float = 0.2) -> tuple[httpx.Response, int]:
+        for attempt in range(1, attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                return response, attempt
+            except httpx.HTTPError:
+                if attempt == attempts:
+                    raise
+                await asyncio.sleep(base_delay * attempt)
+
+        raise RuntimeError("Retry loop terminated unexpectedly")
 
     @staticmethod
     def _parse_dt(raw: str | int | float | None) -> datetime:
