@@ -345,8 +345,6 @@ class NewsRepository:
             published_items += int(qm.get("published_items", qm.get("selected", 0)))
             for topic, count in (row.topic_breakdown or {}).items():
                 topic_distribution[str(topic)] += int(count)
-            for reason, count in (qm.get("rejection_reasons", {}) or {}).items():
-                rejection_reasons[str(reason)] += int(count)
 
         acceptance_rate = 0.0 if raw_count == 0 else round((raw_count - rejected_count) / raw_count, 4)
         return {

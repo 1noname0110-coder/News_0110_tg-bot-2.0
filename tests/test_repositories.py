@@ -130,7 +130,7 @@ def test_aggregate_quality_sums_new_funnel_metrics() -> None:
     assert metrics["removed_as_duplicates_total"] == 2
     assert metrics["removed_by_topic_limit_total"] == 1
     assert metrics["published_items_total"] == 3
-    assert metrics["rejection_reasons"] == {"low_relevance": 4, "noise": 1}
+    assert metrics["rejection_reasons"] == {"low_relevance": 3}
 
 
 def test_aggregate_quality_uses_legacy_quality_keys_as_fallback() -> None:
@@ -366,6 +366,51 @@ def test_compute_daily_stats_includes_rejection_reasons_without_publications() -
 
     asyncio.run(_run())
 
+
+
+def test_compute_daily_stats_rejection_reasons_use_rejected_news_as_single_source() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        day_start_utc = datetime(2026, 1, 7, 14, 0, 0)
+        day_end_utc = datetime(2026, 1, 8, 14, 0, 0)
+
+        async with Session() as session:
+            session.add_all(
+                [
+                    RejectedNews(raw_news_id=501, source_id=1, reason="noise", rejected_at=day_start_utc + timedelta(hours=1)),
+                    RejectedNews(raw_news_id=502, source_id=1, reason="noise", rejected_at=day_start_utc + timedelta(hours=2)),
+                    RejectedNews(raw_news_id=503, source_id=2, reason="low_relevance", rejected_at=day_start_utc + timedelta(hours=3)),
+                ]
+            )
+            session.add(
+                PublishedNews(
+                    period_type="daily",
+                    period_start=day_start_utc,
+                    period_end=day_end_utc,
+                    title="digest",
+                    body="body",
+                    items_count=1,
+                    published_at=day_start_utc + timedelta(hours=4),
+                    quality_metrics={"rejection_reasons": {"noise": 100, "spam": 50}},
+                )
+            )
+            await session.commit()
+
+            repo = NewsRepository(session, timezone="Asia/Vladivostok")
+            stats = await repo.compute_daily_stats(date(2026, 1, 8))
+
+            assert stats.rejected_count == 3
+            assert stats.quality_metrics["rejection_reasons"] == {"noise": 2, "low_relevance": 1}
+            assert sum(stats.quality_metrics["rejection_reasons"].values()) == stats.rejected_count
+
+        await engine.dispose()
+
+    asyncio.run(_run())
 
 def test_compute_weekly_stats_includes_rejection_reasons_without_publications() -> None:
     async def _run() -> None:
