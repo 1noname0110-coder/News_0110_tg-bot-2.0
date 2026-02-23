@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -25,6 +26,11 @@ class DigestOutput:
 
 
 class DigestSummarizer:
+    _LLM_ITEM_PATTERN = re.compile(
+        r"^\s*(\d+)\)\s*\[(?P<topic>[^\]]+)\]\s*(?P<headline>.+?)\s*\n\s*Источник:\s*(?P<url>https?://\S+)\s*$",
+        re.MULTILINE,
+    )
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.filter = NewsFilter()
@@ -54,24 +60,25 @@ class DigestSummarizer:
 
         if self.client:
             generated = await self._build_with_llm(period_type, news)
-            return DigestOutput(
-                title=generated["title"],
-                body=generated["body"],
-                items_count=min(len(news), 15 if period_type == "weekly" else 12),
-                source_breakdown=dict(source_breakdown),
-                topic_breakdown={},
-                quality_metrics={
-                    "accepted_before_dedup": len(news),
-                    "deduplicated": len(news),
-                    "selected": min(len(news), 15 if period_type == "weekly" else 12),
-                    "duplicates_removed": 0,
-                    "removed_by_topic_limit": 0,
-                },
-            )
+            if generated:
+                return DigestOutput(
+                    title=generated["title"],
+                    body=generated["body"],
+                    items_count=len(generated["items"]),
+                    source_breakdown=dict(source_breakdown),
+                    topic_breakdown=generated["topic_breakdown"],
+                    quality_metrics={
+                        "accepted_before_dedup": len(news),
+                        "deduplicated": len(news),
+                        "selected": len(generated["items"]),
+                        "duplicates_removed": 0,
+                        "removed_by_topic_limit": 0,
+                    },
+                )
 
         return self._build_extractive(period_type, news, dict(source_breakdown))
 
-    async def _build_with_llm(self, period_type: str, news: list[RawNews]) -> dict:
+    async def _build_with_llm(self, period_type: str, news: list[RawNews]) -> dict[str, Any] | None:
         limit = 15 if period_type == "weekly" else 12
         prompt_items = "\n".join(
             [f"- {n.title}. {n.summary[:350]} (источник {n.source_id})" for n in news[:80]]
@@ -82,8 +89,14 @@ class DigestSummarizer:
         )
         user = (
             f"Сформируй {period_type} сводку на русском языке. "
-            f"Верни строго формат:\nЗАГОЛОВОК: ...\nПУНКТЫ:\n1) ...\n"
+            "Верни строго формат:\n"
+            "ЗАГОЛОВОК: ...\n"
+            "ПУНКТЫ:\n"
+            "1) [ТЕМА] Краткий факт\n"
+            "Источник: https://...\n"
             f"Сделай от 5 до {limit} пунктов, каждый пункт 1-3 строки.\n"
+            "Для каждого пункта ссылка `Источник` обязательна. "
+            "Не меняй структуру: номер + [ТЕМА] + текст + строка `Источник: URL`.\n"
             f"Новости:\n{prompt_items}"
         )
 
@@ -93,11 +106,48 @@ class DigestSummarizer:
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
         content = response.choices[0].message.content or ""
+        return self._parse_llm_response(period_type, content, limit)
+
+    def _parse_llm_response(self, period_type: str, content: str, limit: int) -> dict[str, Any] | None:
         title = "Ежедневная сводка" if period_type == "daily" else "Недельная сводка"
         if "ЗАГОЛОВОК:" in content:
-            title = content.split("ЗАГОЛОВОК:", 1)[1].splitlines()[0].strip()
-        body = content.split("ПУНКТЫ:")[-1].strip() or content
-        return {"title": title, "body": body}
+            parsed_title = content.split("ЗАГОЛОВОК:", 1)[1].splitlines()[0].strip()
+            if parsed_title:
+                title = parsed_title
+
+        body = content.split("ПУНКТЫ:", 1)[-1].strip() if "ПУНКТЫ:" in content else content.strip()
+        matches = list(self._LLM_ITEM_PATTERN.finditer(body))
+        if not matches:
+            return None
+
+        items = []
+        topic_breakdown: Counter[str] = Counter()
+        lines: list[str] = []
+
+        for expected_number, match in enumerate(matches, start=1):
+            item_number = int(match.group(1))
+            if item_number != expected_number:
+                return None
+
+            topic = match.group("topic").strip()
+            headline = match.group("headline").strip()
+            source_url = match.group("url").strip()
+            if not topic or not headline or not source_url:
+                return None
+
+            topic_breakdown[self._normalize(topic)] += 1
+            lines.append(f"{item_number}) [{topic}] {headline}\nИсточник: {source_url}")
+            items.append({"number": item_number, "topic": topic, "headline": headline, "source_url": source_url})
+
+        if not 5 <= len(items) <= limit:
+            return None
+
+        return {
+            "title": title,
+            "body": "\n\n".join(lines),
+            "items": items,
+            "topic_breakdown": dict(topic_breakdown),
+        }
 
     def _build_extractive(self, period_type: str, news: list[RawNews], source_breakdown: dict[str, int]) -> DigestOutput:
         default_cap = 12 if period_type == "daily" else 15
