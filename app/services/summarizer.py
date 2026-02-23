@@ -180,30 +180,38 @@ class DigestSummarizer:
 
         topic_count: dict[str, int] = defaultdict(int)
         selected: list[tuple[RawNews, str]] = []
+        selected_ids: set[int] = set()
         removed_by_topic_limit = 0
         for item, result in ranked:
+            if item.id in selected_ids:
+                continue
             if topic_count[result.topic] >= per_topic_limit:
                 removed_by_topic_limit += 1
                 continue
             selected.append((item, result.topic))
+            selected_ids.add(item.id)
             topic_count[result.topic] += 1
             if len(selected) >= cap:
                 break
 
         if len(selected) < min_items:
             for item, result in ranked:
+                if item.id in selected_ids:
+                    continue
                 if topic_count[result.topic] >= per_topic_limit:
                     continue
                 selected.append((item, result.topic))
+                selected_ids.add(item.id)
                 topic_count[result.topic] += 1
                 if len(selected) >= cap:
                     break
 
             if len(selected) < min_items:
                 for item, result in ranked:
-                    if any(item.id == chosen.id for chosen, _ in selected):
+                    if item.id in selected_ids:
                         continue
                     selected.append((item, result.topic))
+                    selected_ids.add(item.id)
                     if len(selected) >= min(min_items, len(ranked)):
                         break
 

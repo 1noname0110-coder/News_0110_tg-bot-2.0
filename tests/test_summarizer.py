@@ -197,6 +197,44 @@ def test_build_extractive_publish_all_important_false_keeps_default_cap() -> Non
     assert digest.items_count == 12
 
 
+def test_build_extractive_keeps_unique_items_with_small_input() -> None:
+    settings = _settings()
+    settings.publish_all_important = True
+    settings.per_topic_limit_daily = 3
+    s = DigestSummarizer(settings)
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    items = [
+        RawNews(
+            id=501,
+            source_id=1,
+            title="Экономика: обновлен макропрогноз",
+            summary="Минэкономики уточнило параметры роста и инфляции на следующий период.",
+            url="https://example.com/small/1",
+            external_id="small-1",
+            published_at=base,
+        ),
+        RawNews(
+            id=502,
+            source_id=2,
+            title="Политика: утвержден план реформ",
+            summary="Профильный комитет согласовал последовательность институциональных изменений.",
+            url="https://example.com/small/2",
+            external_id="small-2",
+            published_at=base + timedelta(minutes=1),
+        ),
+    ]
+
+    digest = s._build_extractive("daily", items, {"1": 1, "2": 1})
+
+    assert digest.items_count == 2
+    assert sum(digest.topic_breakdown.values()) == 2
+    assert digest.quality_metrics["selected"] == 2
+    assert digest.body.count("https://example.com/small/1") == 1
+    assert digest.body.count("https://example.com/small/2") == 1
+
+
+
 @pytest.mark.asyncio
 async def test_build_digest_with_llm_parses_items_and_metrics() -> None:
     settings = _settings()
