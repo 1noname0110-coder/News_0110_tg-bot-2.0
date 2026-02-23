@@ -29,18 +29,35 @@ class _FakeResponse:
         return None
 
 
-class _FakeAsyncClient:
-    def __init__(self, text: str, *args, **kwargs):
-        self._text = text
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
+class _SequenceClient:
+    def __init__(self, responses: list[str]):
+        self._responses = responses
+        self._idx = 0
+        self.closed = False
 
     async def get(self, url: str) -> _FakeResponse:
-        return _FakeResponse(self._text)
+        if self._idx >= len(self._responses):
+            raise AssertionError(f"No mocked response left for {url}")
+        response = _FakeResponse(self._responses[self._idx])
+        self._idx += 1
+        return response
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _RetryClient:
+    def __init__(self):
+        self.attempts = 0
+
+    async def get(self, url: str) -> _FakeResponse:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise httpx.ConnectError("network error")
+        return _FakeResponse("<rss></rss>")
+
+    async def aclose(self) -> None:
+        return None
 
 
 def test_strip_html_keeps_plain_text_without_bs4_noise() -> None:
@@ -56,7 +73,7 @@ def test_strip_html_extracts_text_from_markup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_site_reordered_articles_keep_external_id_with_links(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_site_reordered_articles_keep_external_id_with_links() -> None:
     collector = NewsCollector(_settings())
     source = _source()
 
@@ -73,10 +90,8 @@ async def test_fetch_site_reordered_articles_keep_external_id_with_links(monkeyp
     </section>
     """
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _FakeAsyncClient(html_first, *args, **kwargs))
+    collector._client = _SequenceClient([html_first, html_second])
     first_items = await collector._fetch_site(source)
-
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _FakeAsyncClient(html_second, *args, **kwargs))
     second_items = await collector._fetch_site(source)
 
     first_ids = {item["title"]: item["external_id"] for item in first_items}
@@ -86,7 +101,7 @@ async def test_fetch_site_reordered_articles_keep_external_id_with_links(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_fetch_site_reordered_articles_keep_external_id_without_links(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_site_reordered_articles_keep_external_id_without_links() -> None:
     collector = NewsCollector(_settings())
     source = _source()
 
@@ -103,10 +118,8 @@ async def test_fetch_site_reordered_articles_keep_external_id_without_links(monk
     </section>
     """
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _FakeAsyncClient(html_first, *args, **kwargs))
+    collector._client = _SequenceClient([html_first, html_second])
     first_items = await collector._fetch_site(source)
-
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _FakeAsyncClient(html_second, *args, **kwargs))
     second_items = await collector._fetch_site(source)
 
     first_ids = {item["title"]: item["external_id"] for item in first_items}
@@ -135,23 +148,17 @@ async def test_fetch_rss_uses_http_content_for_parse(monkeypatch: pytest.MonkeyP
         return func(*args, **kwargs)
 
     class _RssClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
         async def get(self, url: str) -> _FakeResponse:
             called["http_get"] = True
             assert url == source.url
             return _FakeResponse("<rss></rss>")
 
+        async def aclose(self) -> None:
+            return None
+
     monkeypatch.setattr("app.services.collector.feedparser.parse", fake_parse)
     monkeypatch.setattr("app.services.collector.asyncio.to_thread", fake_to_thread)
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _RssClient(*args, **kwargs))
+    collector._client = _RssClient()
 
     items = await collector._fetch_rss(source)
 
@@ -174,36 +181,20 @@ async def test_fetch_rss_retries_after_network_error(monkeypatch: pytest.MonkeyP
             }
         ]
 
-    attempts = {"count": 0}
-
-    class _RetryClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def get(self, url: str) -> _FakeResponse:
-            attempts["count"] += 1
-            if attempts["count"] == 1:
-                raise httpx.ConnectError("network error")
-            return _FakeResponse("<rss></rss>")
-
     async def fake_to_thread(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _RetryClient(*args, **kwargs))
+    retry_client = _RetryClient()
+    collector._client = retry_client
     monkeypatch.setattr("app.services.collector.feedparser.parse", lambda payload: _FakeParsed())
     monkeypatch.setattr("app.services.collector.asyncio.to_thread", fake_to_thread)
 
     items = await collector.collect_from_source(source)
 
-    assert attempts["count"] == 2
+    assert retry_client.attempts == 2
     assert len(items) == 1
     assert items[0]["external_id"] == "news-1"
+
 
 def test_parse_dt_rfc822_to_utc_naive() -> None:
     collector = NewsCollector(_settings())
@@ -235,7 +226,7 @@ def test_parse_dt_invalid_returns_current_utc_naive() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_api_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_api_retries_then_succeeds() -> None:
     collector = NewsCollector(_settings())
     source = Source(id=3, name="API", type="api", url="https://example.com/api", meta={})
 
@@ -261,22 +252,16 @@ async def test_fetch_api_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) 
             }
 
     class _ApiRetryClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
         async def get(self, url: str):
             attempts["count"] += 1
             if attempts["count"] == 1:
                 raise httpx.ConnectError("temporary network issue")
             return _ApiResponse()
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _ApiRetryClient(*args, **kwargs))
+        async def aclose(self) -> None:
+            return None
+
+    collector._client = _ApiRetryClient()
 
     items = await collector.collect_from_source(source)
 
@@ -286,27 +271,21 @@ async def test_fetch_api_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_collect_from_source_returns_empty_on_retry_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_collect_from_source_returns_empty_on_retry_exhausted() -> None:
     collector = NewsCollector(_settings())
     source = _source()
 
     attempts = {"count": 0}
 
     class _AlwaysFailClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
         async def get(self, url: str):
             attempts["count"] += 1
             raise httpx.ConnectError("network down")
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _AlwaysFailClient(*args, **kwargs))
+        async def aclose(self) -> None:
+            return None
+
+    collector._client = _AlwaysFailClient()
 
     items = await collector.collect_from_source(source)
 
@@ -315,7 +294,7 @@ async def test_collect_from_source_returns_empty_on_retry_exhausted(monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_fetch_api_invalid_json_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_api_invalid_json_returns_empty() -> None:
     collector = NewsCollector(_settings())
     source = Source(id=3, name="API", type="api", url="https://example.com/api", meta={})
 
@@ -330,20 +309,26 @@ async def test_fetch_api_invalid_json_returns_empty(monkeypatch: pytest.MonkeyPa
             raise ValueError("invalid json")
 
     class _ApiClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
         async def get(self, url: str):
             return _InvalidJsonResponse()
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: _ApiClient(*args, **kwargs))
+        async def aclose(self) -> None:
+            return None
+
+    collector._client = _ApiClient()
 
     items = await collector.collect_from_source(source)
 
     assert items == []
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_and_resets_cached_client() -> None:
+    collector = NewsCollector(_settings())
+    client = _SequenceClient(["<html></html>"])
+    collector._client = client
+
+    await collector.aclose()
+
+    assert client.closed is True
+    assert collector._client is None
