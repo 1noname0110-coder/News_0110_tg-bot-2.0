@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Iterable
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, select
@@ -12,6 +13,46 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import DailyStats, PublishedNews, RawNews, RejectedNews, Source, WeeklyStats
 
 ALLOWED_SOURCE_TYPES = {"rss", "site", "api"}
+
+
+def normalize_http_url(url: str) -> str | None:
+    candidate = url.strip()
+    if not candidate or any(ch.isspace() for ch in candidate):
+        return None
+
+    parsed = urlsplit(candidate)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return None
+
+    hostname = parsed.hostname
+    if not parsed.netloc or not hostname:
+        return None
+
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo = f"{userinfo}:{parsed.password}"
+        userinfo = f"{userinfo}@"
+
+    netloc = f"{userinfo}{hostname.lower()}"
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+
+    normalized = SplitResult(
+        scheme=scheme,
+        netloc=netloc,
+        path=parsed.path,
+        query=parsed.query,
+        fragment=parsed.fragment,
+    )
+    return urlunsplit(normalized)
 
 
 class SourceRepository:
@@ -30,7 +71,11 @@ class SourceRepository:
         if source_type not in ALLOWED_SOURCE_TYPES:
             return None
 
-        source = Source(type=source_type, name=name, url=url, meta=meta or {})
+        normalized_url = normalize_http_url(url)
+        if not normalized_url:
+            return None
+
+        source = Source(type=source_type, name=name, url=normalized_url, meta=meta or {})
         self.session.add(source)
         try:
             await self.session.commit()
