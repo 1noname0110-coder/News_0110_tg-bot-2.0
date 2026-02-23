@@ -72,8 +72,8 @@ async def test_statweek_shows_same_calendar_week_bounds(monkeypatch: pytest.Monk
     captured_week_start: dict[str, object] = {}
 
     class _FakeRepo:
-        def __init__(self, _session):
-            pass
+        def __init__(self, _session, timezone="UTC"):
+            self.timezone = timezone
 
         async def compute_weekly_stats(self, week_start):
             captured_week_start["value"] = week_start

@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from app.db import Base
 from app.models import PublishedNews, RawNews, RejectedNews
@@ -193,6 +193,108 @@ def test_reject_does_not_create_duplicates_for_same_raw_news_id() -> None:
 
             assert len(rows) == 1
             assert rows[0].reason == "low_relevance"
+
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_compute_daily_stats_uses_local_timezone_boundaries() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        day_start_utc = datetime(2026, 1, 7, 14, 0, 0)
+        day_end_utc = datetime(2026, 1, 8, 14, 0, 0)
+
+        async with Session() as session:
+            session.add_all(
+                [
+                    RawNews(source_id=1, title="before", summary="s", url="https://example.com/before", external_id="before", published_at=day_start_utc - timedelta(seconds=1)),
+                    RawNews(source_id=1, title="start", summary="s", url="https://example.com/start", external_id="start", published_at=day_start_utc),
+                    RawNews(source_id=2, title="inside", summary="s", url="https://example.com/inside", external_id="inside", published_at=day_end_utc - timedelta(seconds=1)),
+                    RawNews(source_id=2, title="after", summary="s", url="https://example.com/after", external_id="after", published_at=day_end_utc),
+                ]
+            )
+            session.add_all(
+                [
+                    RejectedNews(raw_news_id=101, source_id=1, reason="before", rejected_at=day_start_utc - timedelta(seconds=1)),
+                    RejectedNews(raw_news_id=102, source_id=1, reason="in", rejected_at=day_start_utc),
+                    RejectedNews(raw_news_id=103, source_id=2, reason="in", rejected_at=day_end_utc - timedelta(seconds=1)),
+                    RejectedNews(raw_news_id=104, source_id=2, reason="after", rejected_at=day_end_utc),
+                ]
+            )
+            session.add_all(
+                [
+                    PublishedNews(period_type="daily", period_start=day_start_utc, period_end=day_end_utc, title="before", body="b", items_count=1, published_at=day_start_utc - timedelta(seconds=1)),
+                    PublishedNews(period_type="daily", period_start=day_start_utc, period_end=day_end_utc, title="start", body="b", items_count=1, published_at=day_start_utc),
+                    PublishedNews(period_type="daily", period_start=day_start_utc, period_end=day_end_utc, title="inside", body="b", items_count=1, published_at=day_end_utc - timedelta(seconds=1)),
+                    PublishedNews(period_type="daily", period_start=day_start_utc, period_end=day_end_utc, title="after", body="b", items_count=1, published_at=day_end_utc),
+                ]
+            )
+            await session.commit()
+
+            repo = NewsRepository(session, timezone="Asia/Vladivostok")
+            stats = await repo.compute_daily_stats(date(2026, 1, 8))
+
+            assert stats.published_count == 2
+            assert stats.rejected_count == 2
+            assert stats.source_usage == {"1": 1, "2": 1}
+            assert stats.rejection_breakdown == {"1": 1, "2": 1}
+
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_compute_weekly_stats_uses_local_timezone_boundaries() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        week_start_utc = datetime(2026, 1, 4, 14, 0, 0)
+        week_end_utc = datetime(2026, 1, 11, 14, 0, 0)
+
+        async with Session() as session:
+            session.add_all(
+                [
+                    RawNews(source_id=1, title="before-week", summary="s", url="https://example.com/before-week", external_id="before-week", published_at=week_start_utc - timedelta(seconds=1)),
+                    RawNews(source_id=1, title="week-start", summary="s", url="https://example.com/week-start", external_id="week-start", published_at=week_start_utc),
+                    RawNews(source_id=2, title="week-end-inside", summary="s", url="https://example.com/week-end-inside", external_id="week-end-inside", published_at=week_end_utc - timedelta(seconds=1)),
+                    RawNews(source_id=2, title="after-week", summary="s", url="https://example.com/after-week", external_id="after-week", published_at=week_end_utc),
+                ]
+            )
+            session.add_all(
+                [
+                    RejectedNews(raw_news_id=201, source_id=1, reason="before", rejected_at=week_start_utc - timedelta(seconds=1)),
+                    RejectedNews(raw_news_id=202, source_id=1, reason="in", rejected_at=week_start_utc),
+                    RejectedNews(raw_news_id=203, source_id=2, reason="in", rejected_at=week_end_utc - timedelta(seconds=1)),
+                    RejectedNews(raw_news_id=204, source_id=2, reason="after", rejected_at=week_end_utc),
+                ]
+            )
+            session.add_all(
+                [
+                    PublishedNews(period_type="weekly", period_start=week_start_utc, period_end=week_end_utc, title="before", body="b", items_count=1, published_at=week_start_utc - timedelta(seconds=1)),
+                    PublishedNews(period_type="weekly", period_start=week_start_utc, period_end=week_end_utc, title="start", body="b", items_count=1, published_at=week_start_utc),
+                    PublishedNews(period_type="weekly", period_start=week_start_utc, period_end=week_end_utc, title="inside", body="b", items_count=1, published_at=week_end_utc - timedelta(seconds=1)),
+                    PublishedNews(period_type="weekly", period_start=week_start_utc, period_end=week_end_utc, title="after", body="b", items_count=1, published_at=week_end_utc),
+                ]
+            )
+            await session.commit()
+
+            repo = NewsRepository(session, timezone="Asia/Vladivostok")
+            stats = await repo.compute_weekly_stats(date(2026, 1, 5))
+
+            assert stats.published_count == 2
+            assert stats.rejected_count == 2
+            assert stats.source_usage == {"1": 1, "2": 1}
+            assert stats.rejection_breakdown == {"1": 1, "2": 1}
 
         await engine.dispose()
 

@@ -40,7 +40,7 @@ class DigestService:
 
     async def collect_and_store(self, session: AsyncSession) -> None:
         source_repo = SourceRepository(session)
-        news_repo = NewsRepository(session)
+        news_repo = NewsRepository(session, timezone=self.settings.timezone)
 
         sources = await source_repo.list_active()
         for source in sources:
@@ -75,7 +75,7 @@ class DigestService:
         )
 
     async def _publish_period(self, bot: Bot, session: AsyncSession, period_type: str, start_dt: datetime, end_dt: datetime) -> None:
-        news_repo = NewsRepository(session)
+        news_repo = NewsRepository(session, timezone=self.settings.timezone)
 
         period_limit = self.settings.max_period_news_daily if period_type == "daily" else self.settings.max_period_news_weekly
         raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
