@@ -154,7 +154,7 @@ async def test_statweek_shows_same_calendar_week_bounds(monkeypatch: pytest.Monk
         async def answer(self, text: str) -> None:
             answers.append(text)
 
-    monkeypatch.setattr(admin, "AsyncSessionLocal", _FakeSessionCtx)
+    monkeypatch.setattr(admin, "get_session_factory", lambda: _FakeSessionCtx)
     monkeypatch.setattr(admin, "NewsRepository", _FakeRepo)
 
     await admin.stat_week(_FakeMessage(), settings)
@@ -204,7 +204,7 @@ async def test_statweek_live_uses_current_moment_bounds(monkeypatch: pytest.Monk
         async def answer(self, text: str) -> None:
             answers.append(text)
 
-    monkeypatch.setattr(admin, "AsyncSessionLocal", _FakeSessionCtx)
+    monkeypatch.setattr(admin, "get_session_factory", lambda: _FakeSessionCtx)
     monkeypatch.setattr(admin, "NewsRepository", _FakeRepo)
 
     await admin.stat_week_live(_FakeMessage(), settings)

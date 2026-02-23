@@ -9,7 +9,7 @@ if __package__ in {None, ""}:
 
 from app.bot import create_bot, create_dispatcher
 from app.config import get_settings
-from app.db import init_db
+from app.db import close_engine, init_db
 from app.services.digest_service import DigestService
 from app.services.scheduler_service import BotScheduler
 
@@ -41,6 +41,7 @@ async def main() -> None:
         scheduler.stop()
         await digest_service.aclose()
         await bot.session.close()
+        await close_engine()
         logger.info("Graceful shutdown завершен")
 
 
