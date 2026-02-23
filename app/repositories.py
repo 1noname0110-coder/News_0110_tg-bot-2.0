@@ -257,6 +257,21 @@ class NewsRepository:
             datetime.combine(week_start, datetime.min.time()),
             timedelta(days=7),
         )
+        return await self._compute_weekly_stats_in_bounds(week_start, start, end)
+
+    async def compute_weekly_stats_live(self, week_start: date, now_local_naive: datetime) -> WeeklyStats:
+        start, _ = self._local_period_to_utc_bounds(
+            datetime.combine(week_start, datetime.min.time()),
+            timedelta(days=7),
+        )
+        now_utc = (
+            now_local_naive.replace(tzinfo=ZoneInfo(self.timezone))
+            .astimezone(ZoneInfo("UTC"))
+            .replace(tzinfo=None)
+        )
+        return await self._compute_weekly_stats_in_bounds(week_start, start, now_utc)
+
+    async def _compute_weekly_stats_in_bounds(self, week_start: date, start: datetime, end: datetime) -> WeeklyStats:
 
         raws = await self.fetch_period_news(start, end)
         raw_by_source = Counter(str(r.source_id) for r in raws)
