@@ -50,7 +50,7 @@ def normalize_http_url(url: str) -> str | None:
         netloc=netloc,
         path=parsed.path,
         query=parsed.query,
-        fragment=parsed.fragment,
+        fragment="",
     )
     return urlunsplit(normalized)
 
