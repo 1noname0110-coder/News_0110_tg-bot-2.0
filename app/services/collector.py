@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 class NewsCollector:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._client: httpx.AsyncClient | None = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is None:
+            return
+        await self._client.aclose()
+        self._client = None
 
     async def collect_from_source(self, source: Source) -> list[dict]:
         try:
@@ -210,11 +222,11 @@ class NewsCollector:
         return out
 
     async def _get_with_retry(self, url: str, attempts: int = 3, base_delay: float = 0.2) -> tuple[httpx.Response, int]:
+        client = await self._get_client()
         for attempt in range(1, attempts + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds) as client:
-                    response = await client.get(url)
-                    response.raise_for_status()
+                response = await client.get(url)
+                response.raise_for_status()
                 return response, attempt
             except httpx.HTTPError:
                 if attempt == attempts:

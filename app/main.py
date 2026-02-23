@@ -27,7 +27,12 @@ async def main() -> None:
     scheduler = BotScheduler(settings=settings, bot=bot, digest_service=digest_service)
     scheduler.start()
 
-    await dp.start_polling(bot, settings=settings)
+    try:
+        await dp.start_polling(bot, settings=settings)
+    finally:
+        scheduler.shutdown()
+        await digest_service.collector.aclose()
+        await bot.session.close()
 
 
 if __name__ == "__main__":

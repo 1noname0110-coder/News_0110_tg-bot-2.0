@@ -51,3 +51,7 @@ class BotScheduler:
     def start(self) -> None:
         self.setup()
         self.scheduler.start()
+
+    def shutdown(self) -> None:
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
