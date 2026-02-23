@@ -20,7 +20,7 @@ from aiogram.exceptions import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.periods import get_calendar_week_bounds
+from app.periods import get_calendar_day_bounds, get_calendar_week_bounds
 from app.repositories import NewsRepository, SourceRepository
 from app.services.collector import NewsCollector
 from app.services.filtering import NewsFilter
@@ -83,14 +83,14 @@ class DigestService:
     async def publish_daily(self, bot: Bot, session: AsyncSession) -> None:
         tz = ZoneInfo(self.settings.timezone)
         now_local = datetime.now(tz)
-        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start_local, day_end_local = get_calendar_day_bounds(now_local)
 
         await self._publish_period(
             bot=bot,
             session=session,
             period_type="daily",
-            start_dt=start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
-            end_dt=now_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+            start_dt=day_start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+            end_dt=day_end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
         )
 
     async def republish_period(
@@ -121,6 +121,35 @@ class DigestService:
             period_type="weekly",
             start_dt=week_start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
             end_dt=week_end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+        )
+
+
+    async def publish_daily_preview(self, bot: Bot, session: AsyncSession) -> None:
+        tz = ZoneInfo(self.settings.timezone)
+        now_local = datetime.now(tz)
+        day_start_local, _ = get_calendar_day_bounds(now_local)
+
+        await self._publish_period(
+            bot=bot,
+            session=session,
+            period_type="daily",
+            start_dt=day_start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+            end_dt=now_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+            allow_republish=True,
+        )
+
+    async def publish_weekly_preview(self, bot: Bot, session: AsyncSession) -> None:
+        tz = ZoneInfo(self.settings.timezone)
+        now_local = datetime.now(tz)
+        week_start_local, _ = get_calendar_week_bounds(now_local)
+
+        await self._publish_period(
+            bot=bot,
+            session=session,
+            period_type="weekly",
+            start_dt=week_start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+            end_dt=now_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None),
+            allow_republish=True,
         )
 
     async def _publish_period(
