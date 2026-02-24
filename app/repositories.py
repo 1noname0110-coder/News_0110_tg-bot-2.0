@@ -38,6 +38,23 @@ class SourceCreateResult:
     error: Exception | None = None
 
 
+class SourceUpdateStatus(str, Enum):
+    UPDATED = "updated"
+    INVALID_SOURCE_ID = "invalid_source_id"
+    INVALID_FIELD = "invalid_field"
+    INVALID_VALUE = "invalid_value"
+    DUPLICATE_NAME = "duplicate_name"
+    NOT_FOUND = "not_found"
+    DB_ERROR = "db_error"
+
+
+@dataclass(slots=True)
+class SourceUpdateResult:
+    status: SourceUpdateStatus
+    source: Source | None = None
+    error: Exception | None = None
+
+
 def normalize_http_url(url: str) -> str | None:
     candidate = url.strip()
     if not candidate or any(ch.isspace() for ch in candidate):
@@ -83,12 +100,24 @@ class SourceRepository:
         self.session = session
 
     async def list_active(self) -> list[Source]:
-        result = await self.session.execute(select(Source).where(Source.is_active.is_(True)))
-        return list(result.scalars().all())
+        return await self.list_sources(active_only=True)
 
     async def list_all(self) -> list[Source]:
-        result = await self.session.execute(select(Source).order_by(Source.id.asc()))
+        return await self.list_sources(active_only=None)
+
+    async def list_sources(self, active_only: bool | None = None) -> list[Source]:
+        query = select(Source)
+        if active_only is True:
+            query = query.where(Source.is_active.is_(True))
+        elif active_only is False:
+            query = query.where(Source.is_active.is_(False))
+        result = await self.session.execute(query.order_by(Source.id.asc()))
         return list(result.scalars().all())
+
+    async def get_by_id(self, source_id: int) -> Source | None:
+        if source_id <= 0:
+            return None
+        return await self.session.get(Source, source_id)
 
     @staticmethod
     def _is_duplicate_name_error(error: IntegrityError) -> bool:
@@ -139,6 +168,68 @@ class SourceRepository:
         await self.session.commit()
         await self.session.refresh(source)
         return source
+
+    async def toggle(self, source_id: int, enabled: bool) -> SourceUpdateResult:
+        if source_id <= 0:
+            return SourceUpdateResult(status=SourceUpdateStatus.INVALID_SOURCE_ID)
+
+        source = await self.session.get(Source, source_id)
+        if not source:
+            return SourceUpdateResult(status=SourceUpdateStatus.NOT_FOUND)
+
+        source.is_active = enabled
+        try:
+            await self.session.commit()
+        except Exception as exc:
+            await self.session.rollback()
+            return SourceUpdateResult(status=SourceUpdateStatus.DB_ERROR, error=exc)
+
+        await self.session.refresh(source)
+        return SourceUpdateResult(status=SourceUpdateStatus.UPDATED, source=source)
+
+    async def update(self, source_id: int, field: str, value: str | dict | bool) -> SourceUpdateResult:
+        if source_id <= 0:
+            return SourceUpdateResult(status=SourceUpdateStatus.INVALID_SOURCE_ID)
+
+        source = await self.session.get(Source, source_id)
+        if not source:
+            return SourceUpdateResult(status=SourceUpdateStatus.NOT_FOUND)
+
+        if field == "name":
+            name = str(value).strip()
+            if not name:
+                return SourceUpdateResult(status=SourceUpdateStatus.INVALID_VALUE)
+            source.name = name
+        elif field == "type":
+            source_type = str(value).strip().lower()
+            if source_type not in ALLOWED_SOURCE_TYPES:
+                return SourceUpdateResult(status=SourceUpdateStatus.INVALID_VALUE)
+            source.type = source_type
+        elif field == "url":
+            normalized_url = normalize_http_url(str(value))
+            if not normalized_url:
+                return SourceUpdateResult(status=SourceUpdateStatus.INVALID_VALUE)
+            source.url = normalized_url
+        elif field == "meta":
+            if not isinstance(value, dict):
+                return SourceUpdateResult(status=SourceUpdateStatus.INVALID_VALUE)
+            source.meta = dict(value)
+        else:
+            return SourceUpdateResult(status=SourceUpdateStatus.INVALID_FIELD)
+
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            if self._is_duplicate_name_error(exc):
+                return SourceUpdateResult(status=SourceUpdateStatus.DUPLICATE_NAME, error=exc)
+            return SourceUpdateResult(status=SourceUpdateStatus.DB_ERROR, error=exc)
+        except Exception as exc:
+            await self.session.rollback()
+            return SourceUpdateResult(status=SourceUpdateStatus.DB_ERROR, error=exc)
+
+        await self.session.refresh(source)
+        return SourceUpdateResult(status=SourceUpdateStatus.UPDATED, source=source)
 
 
 class NewsRepository:

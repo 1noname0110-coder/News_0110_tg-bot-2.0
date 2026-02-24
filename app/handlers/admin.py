@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from time import perf_counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -16,9 +17,11 @@ from app.repositories import (
     ALLOWED_SOURCE_TYPES,
     NewsRepository,
     SourceCreateStatus,
+    SourceUpdateStatus,
     SourceRepository,
     normalize_http_url,
 )
+from app.services.collector import NewsCollector
 
 router = Router(name="admin")
 logger = logging.getLogger(__name__)
@@ -111,6 +114,153 @@ async def remove_source(message: Message, settings: Settings) -> None:
         repo = SourceRepository(session)
         ok = await repo.remove(source_id)
     await message.answer("Источник удалён." if ok else "Источник не найден.")
+
+
+@router.message(Command("listsources"))
+async def list_sources(message: Message, settings: Settings) -> None:
+    if not _is_admin(message, settings):
+        await message.answer("Недостаточно прав.")
+        return
+
+    async with get_session_factory()() as session:
+        repo = SourceRepository(session)
+        sources = await repo.list_sources(active_only=None)
+
+    if not sources:
+        await message.answer("Источники не найдены.")
+        return
+
+    lines = [
+        f"#{source.id} [{ 'on' if source.is_active else 'off' }] {source.type} {source.name} {source.url}"
+        for source in sources
+    ]
+    await message.answer("Список источников:\n" + "\n".join(lines))
+
+
+@router.message(Command("togglesource"))
+async def toggle_source(message: Message, settings: Settings) -> None:
+    if not _is_admin(message, settings):
+        await message.answer("Недостаточно прав.")
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) != 3 or not parts[1].isdigit() or parts[2].lower() not in {"on", "off"}:
+        await message.answer("Формат: /togglesource <id> <on|off>")
+        return
+
+    source_id = int(parts[1])
+    enabled = parts[2].lower() == "on"
+    async with get_session_factory()() as session:
+        repo = SourceRepository(session)
+        result = await repo.toggle(source_id=source_id, enabled=enabled)
+
+    if result.status == SourceUpdateStatus.NOT_FOUND:
+        await message.answer("Источник не найден.")
+        return
+    if result.status != SourceUpdateStatus.UPDATED or not result.source:
+        await message.answer("Ошибка обновления источника.")
+        return
+
+    await message.answer(f"Источник #{result.source.id} {'включён' if result.source.is_active else 'выключен' }.")
+
+
+@router.message(Command("editsource"))
+async def edit_source(message: Message, settings: Settings) -> None:
+    if not _is_admin(message, settings):
+        await message.answer("Недостаточно прав.")
+        return
+
+    parts = (message.text or "").split(maxsplit=3)
+    if len(parts) != 4 or not parts[1].isdigit():
+        await message.answer("Формат: /editsource <id> <field> <value>")
+        return
+
+    source_id = int(parts[1])
+    field = parts[2].strip().lower()
+    raw_value = parts[3].strip()
+
+    value: str | dict = raw_value
+    if field == "meta":
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            await message.answer("Для поля meta требуется JSON-объект.")
+            return
+        if not isinstance(parsed, dict):
+            await message.answer("Для поля meta требуется JSON-объект.")
+            return
+        value = parsed
+
+    async with get_session_factory()() as session:
+        repo = SourceRepository(session)
+        result = await repo.update(source_id=source_id, field=field, value=value)
+
+    if result.status == SourceUpdateStatus.NOT_FOUND:
+        await message.answer("Источник не найден.")
+        return
+    if result.status == SourceUpdateStatus.INVALID_FIELD:
+        await message.answer("Некорректное поле. Допустимо: name, type, url, meta.")
+        return
+    if result.status == SourceUpdateStatus.INVALID_VALUE:
+        await message.answer("Некорректное значение поля.")
+        return
+    if result.status == SourceUpdateStatus.DUPLICATE_NAME:
+        await message.answer("Источник с таким именем уже существует.")
+        return
+    if result.status != SourceUpdateStatus.UPDATED or not result.source:
+        await message.answer("Ошибка обновления источника.")
+        return
+
+    await message.answer(f"Источник обновлён: #{result.source.id} {field}={getattr(result.source, field, 'updated')}")
+
+
+@router.message(Command("checksource"))
+async def check_source(message: Message, settings: Settings) -> None:
+    if not _is_admin(message, settings):
+        await message.answer("Недостаточно прав.")
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Формат: /checksource <id>")
+        return
+
+    source_id = int(parts[1])
+    async with get_session_factory()() as session:
+        repo = SourceRepository(session)
+        source = await repo.get_by_id(source_id)
+
+    if not source:
+        await message.answer("Источник не найден.")
+        return
+
+    collector = NewsCollector(settings)
+    started = perf_counter()
+    items_count = 0
+    first_error = "-"
+    try:
+        if source.type == "rss":
+            items = await collector._fetch_rss(source)
+        elif source.type == "site":
+            items = await collector._fetch_site(source)
+        elif source.type == "api":
+            items = await collector._fetch_api(source)
+        else:
+            items = []
+            first_error = f"unsupported source type: {source.type}"
+        items_count = len(items)
+    except Exception as exc:
+        first_error = f"{type(exc).__name__}: {exc}"
+    finally:
+        elapsed_ms = (perf_counter() - started) * 1000
+        await collector.aclose()
+
+    await message.answer(
+        f"Проверка источника #{source.id} ({source.name})\n"
+        f"Время ответа: {elapsed_ms:.1f} ms\n"
+        f"Найдено элементов: {items_count}\n"
+        f"Первая ошибка: {first_error}"
+    )
 
 
 @router.message(Command("stat"))
