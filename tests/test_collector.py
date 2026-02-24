@@ -75,7 +75,8 @@ def test_strip_html_extracts_text_from_markup() -> None:
 @pytest.mark.asyncio
 async def test_fetch_site_reordered_articles_keep_external_id_with_links() -> None:
     collector = NewsCollector(_settings())
-    source = _source()
+    source_first = _source()
+    source_second = _source()
 
     html_first = """
     <section>
@@ -91,8 +92,8 @@ async def test_fetch_site_reordered_articles_keep_external_id_with_links() -> No
     """
 
     collector._client = _SequenceClient([html_first, html_second])
-    first_items = await collector._fetch_site(source)
-    second_items = await collector._fetch_site(source)
+    first_items = await collector._fetch_site(source_first)
+    second_items = await collector._fetch_site(source_second)
 
     first_ids = {item["title"]: item["external_id"] for item in first_items}
     second_ids = {item["title"]: item["external_id"] for item in second_items}
@@ -103,7 +104,8 @@ async def test_fetch_site_reordered_articles_keep_external_id_with_links() -> No
 @pytest.mark.asyncio
 async def test_fetch_site_reordered_articles_keep_external_id_without_links() -> None:
     collector = NewsCollector(_settings())
-    source = _source()
+    source_first = _source()
+    source_second = _source()
 
     html_first = """
     <section>
@@ -119,13 +121,53 @@ async def test_fetch_site_reordered_articles_keep_external_id_without_links() ->
     """
 
     collector._client = _SequenceClient([html_first, html_second])
-    first_items = await collector._fetch_site(source)
-    second_items = await collector._fetch_site(source)
+    first_items = await collector._fetch_site(source_first)
+    second_items = await collector._fetch_site(source_second)
 
     first_ids = {item["title"]: item["external_id"] for item in first_items}
     second_ids = {item["title"]: item["external_id"] for item in second_items}
 
     assert first_ids == second_ids
+
+
+@pytest.mark.asyncio
+async def test_fetch_site_repeat_run_skips_already_seen_entries() -> None:
+    collector = NewsCollector(_settings())
+    source = _source()
+
+    html = """
+    <section>
+      <article><h2>Первая новость</h2><a href="/items/1">читать</a><p>Кратко 1</p></article>
+      <article><h2>Вторая новость</h2><a href="/items/2">читать</a><p>Кратко 2</p></article>
+    </section>
+    """
+
+    collector._client = _SequenceClient([html, html])
+    first_items = await collector._fetch_site(source)
+    second_items = await collector._fetch_site(source)
+
+    assert len(first_items) == 2
+    assert second_items == []
+    assert "site_cursor" in source.meta
+    assert source.meta["last_seen_external_ids"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_site_soft_dedup_by_content_hash_without_dates() -> None:
+    collector = NewsCollector(_settings())
+    source = _source()
+
+    html = """
+    <section>
+      <article><h2>Первая новость</h2><p>Одинаковый текст</p></article>
+      <article><h2>Первая новость</h2><p>Одинаковый текст</p></article>
+    </section>
+    """
+
+    collector._client = _SequenceClient([html])
+    items = await collector._fetch_site(source)
+
+    assert len(items) == 1
 
 
 @pytest.mark.asyncio

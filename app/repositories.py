@@ -125,6 +125,15 @@ class SourceRepository:
         await self.session.commit()
         return True
 
+    async def update_meta(self, source_id: int, meta: dict) -> Source | None:
+        source = await self.session.get(Source, source_id)
+        if not source:
+            return None
+        source.meta = dict(meta)
+        await self.session.commit()
+        await self.session.refresh(source)
+        return source
+
 
 class NewsRepository:
     def __init__(self, session: AsyncSession, timezone: str = "UTC"):

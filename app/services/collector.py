@@ -5,7 +5,7 @@ import logging
 import re
 import warnings
 from hashlib import sha256
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -112,15 +112,42 @@ class NewsCollector:
             raise
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        dedup_window_days = max(int(source.meta.get("dedup_window_days", 7) or 7), 1)
+        dedup_cutoff = now - timedelta(days=dedup_window_days)
+        cursor = source.meta.get("site_cursor", {})
+        last_seen_at = self._parse_optional_iso_dt(cursor.get("last_seen_at"))
+        seen_urls = self._prune_cursor_tokens(cursor.get("seen_urls", {}), dedup_cutoff)
+        seen_hashes = self._prune_cursor_tokens(cursor.get("seen_hashes", {}), dedup_cutoff)
+
         items = []
         for article in soup.select(selector)[:50]:
             title_tag = article.select_one(title_selector)
             title = (title_tag.get_text(strip=True) if title_tag else article.get_text(" ", strip=True))[:1024]
             if not title:
                 continue
+
             summary = article.get_text(" ", strip=True)[:4000]
             article_link = self._extract_article_link(source.url, article)
+            normalized_url = self._normalize_url(article_link) if article_link else None
+            content_hash = self._site_content_hash(title=title, summary=summary)
+            published_at = self._extract_site_published_at(article) or now
+
+            if self._should_skip_site_item(
+                published_at=published_at,
+                last_seen_at=last_seen_at,
+                normalized_url=normalized_url,
+                content_hash=content_hash,
+                seen_urls=seen_urls,
+                seen_hashes=seen_hashes,
+                dedup_cutoff=dedup_cutoff,
+            ):
+                continue
+
             external_id = self._site_external_id(article_link=article_link, title=title, summary=summary)
+            cursor_mark = now.isoformat()
+            if normalized_url:
+                seen_urls[normalized_url] = cursor_mark
+            seen_hashes[content_hash] = cursor_mark
             items.append(
                 {
                     "source_id": source.id,
@@ -128,10 +155,20 @@ class NewsCollector:
                     "summary": summary,
                     "url": article_link or source.url,
                     "external_id": external_id,
-                    "published_at": now,
+                    "published_at": published_at,
                     "tags": [],
                 }
             )
+
+        source.meta["site_cursor"] = {
+            "last_seen_at": now.isoformat(),
+            "seen_urls": seen_urls,
+            "seen_hashes": seen_hashes,
+        }
+        source.meta["last_seen_at"] = now.isoformat()
+        if items:
+            source.meta["last_seen_external_ids"] = [item["external_id"] for item in items[:100]]
+
         elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000
         logger.info(
             "SITE источник %s обработан за %.1fms status=success attempts=%s",
@@ -157,6 +194,63 @@ class NewsCollector:
 
         content_fingerprint = NewsCollector._normalize_text(title) + "\n" + NewsCollector._normalize_text(summary)
         return f"site-content-{sha256(content_fingerprint.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _site_content_hash(title: str, summary: str) -> str:
+        content_fingerprint = NewsCollector._normalize_text(title) + "\n" + NewsCollector._normalize_text(summary)
+        return sha256(content_fingerprint.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _parse_optional_iso_dt(raw: str | None) -> datetime | None:
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _prune_cursor_tokens(tokens: dict[str, str], cutoff: datetime) -> dict[str, str]:
+        cleaned: dict[str, str] = {}
+        for token, seen_at_raw in (tokens or {}).items():
+            seen_at = NewsCollector._parse_optional_iso_dt(seen_at_raw)
+            if seen_at and seen_at >= cutoff:
+                cleaned[token] = seen_at_raw
+        return cleaned
+
+    @staticmethod
+    def _should_skip_site_item(
+        published_at: datetime,
+        last_seen_at: datetime | None,
+        normalized_url: str | None,
+        content_hash: str,
+        seen_urls: dict[str, str],
+        seen_hashes: dict[str, str],
+        dedup_cutoff: datetime,
+    ) -> bool:
+        if last_seen_at and published_at <= last_seen_at:
+            if normalized_url and normalized_url in seen_urls:
+                return True
+            if content_hash in seen_hashes:
+                return True
+
+        if published_at >= dedup_cutoff:
+            if normalized_url and normalized_url in seen_urls:
+                return True
+            if content_hash in seen_hashes:
+                return True
+
+        return False
+
+    @staticmethod
+    def _extract_site_published_at(article: BeautifulSoup) -> datetime | None:
+        time_tag = article.select_one("time[datetime]")
+        if not time_tag:
+            return None
+        raw_value = time_tag.get("datetime")
+        if not raw_value:
+            return None
+        return NewsCollector._parse_dt(raw_value)
 
     @staticmethod
     def _normalize_url(url: str) -> str:
