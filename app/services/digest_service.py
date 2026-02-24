@@ -81,7 +81,7 @@ class DigestService:
                     source.name,
                     elapsed,
                 )
-                return []
+                return source, []
 
             elapsed = perf_counter() - started_at
             logger.info(
@@ -91,12 +91,14 @@ class DigestService:
                 elapsed,
                 len(items),
             )
-            return items
+            return source, items
 
         batches = await asyncio.gather(*(_collect_for_source(source) for source in sources))
-        for items in batches:
+        for source, items in batches:
             if items:
                 await news_repo.add_raw_news(items)
+            if source.type == "site":
+                await source_repo.update_meta(source.id, source.meta)
 
     async def publish_daily(self, bot: Bot, session: AsyncSession) -> None:
         tz = ZoneInfo(self.settings.timezone)
