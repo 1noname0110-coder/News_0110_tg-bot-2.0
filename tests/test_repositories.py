@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from datetime import date, datetime, timedelta
 
 from app.db import Base
-from app.models import PublishedNews, RawNews, RejectedNews
+from app.models import PublishedNews, RawNews, RejectedNews, Source
 from app.repositories import NewsRepository, SourceCreateStatus, SourceRepository, normalize_http_url
 
 
@@ -498,6 +498,77 @@ def test_reject_many_does_not_create_duplicates_across_repeated_calls() -> None:
             assert inserted_second == 0
             assert [row.raw_news_id for row in rows] == [11, 12]
 
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+def test_source_update_validates_field_and_value() -> None:
+    session = MagicMock()
+    source = MagicMock()
+    source.id = 1
+    session.get = AsyncMock(return_value=source)
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    repo = SourceRepository(session)
+    invalid_field = asyncio.run(repo.update(source_id=1, field="unknown", value="x"))
+    invalid_value = asyncio.run(repo.update(source_id=1, field="type", value="telegram"))
+
+    assert invalid_field.status.value == "invalid_field"
+    assert invalid_value.status.value == "invalid_value"
+    session.commit.assert_not_awaited()
+
+
+def test_source_update_normalizes_url() -> None:
+    session = MagicMock()
+    source = MagicMock()
+    source.id = 1
+    source.url = ""
+    session.get = AsyncMock(return_value=source)
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    repo = SourceRepository(session)
+    result = asyncio.run(repo.update(source_id=1, field="url", value="HTTP://Example.COM/a"))
+
+    assert result.status.value == "updated"
+    assert source.url == "http://example.com/a"
+
+
+def test_source_toggle_sets_state() -> None:
+    session = MagicMock()
+    source = MagicMock()
+    source.id = 3
+    source.is_active = True
+    session.get = AsyncMock(return_value=source)
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    repo = SourceRepository(session)
+    result = asyncio.run(repo.toggle(source_id=3, enabled=False))
+
+    assert result.status.value == "updated"
+    assert source.is_active is False
+
+
+def test_source_list_sources_filters_by_active() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+        async with Session() as session:
+            session.add_all([
+                Source(name='s1', type='rss', url='https://a', is_active=True),
+                Source(name='s2', type='rss', url='https://b', is_active=False),
+            ])
+            await session.commit()
+            repo = SourceRepository(session)
+            active = await repo.list_sources(active_only=True)
+            inactive = await repo.list_sources(active_only=False)
+            assert [s.name for s in active] == ['s1']
+            assert [s.name for s in inactive] == ['s2']
         await engine.dispose()
 
     asyncio.run(_run())

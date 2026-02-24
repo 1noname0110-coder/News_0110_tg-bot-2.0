@@ -10,7 +10,7 @@ os.environ.setdefault("CHANNEL_ID", "@test_channel")
 
 from app.config import Settings
 from app.handlers import admin
-from app.repositories import SourceCreateResult, SourceCreateStatus
+from app.repositories import SourceCreateResult, SourceCreateStatus, SourceUpdateResult, SourceUpdateStatus
 
 
 def _settings() -> Settings:
@@ -178,3 +178,143 @@ async def test_addsource_returns_generic_db_error_and_logs_exception(monkeypatch
 
     assert answers == ["Ошибка сохранения источника, проверьте логи"]
     assert len(log_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_listsources_returns_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings()
+    answers: list[str] = []
+
+    class _FakeMessage:
+        text = "/listsources"
+        from_user = SimpleNamespace(id=42)
+
+        async def answer(self, text: str) -> None:
+            answers.append(text)
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeRepo:
+        def __init__(self, session):
+            pass
+
+        async def list_sources(self, active_only=None):
+            return [
+                SimpleNamespace(id=1, is_active=True, type="rss", name="A", url="https://a"),
+                SimpleNamespace(id=2, is_active=False, type="site", name="B", url="https://b"),
+            ]
+
+    monkeypatch.setattr(admin, "get_session_factory", lambda: (lambda: _FakeSession()))
+    monkeypatch.setattr(admin, "SourceRepository", _FakeRepo)
+
+    await admin.list_sources(_FakeMessage(), settings)
+
+    assert "#1 [on] rss A https://a" in answers[0]
+    assert "#2 [off] site B https://b" in answers[0]
+
+
+@pytest.mark.asyncio
+async def test_togglesource_updates_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings()
+    answers: list[str] = []
+
+    class _FakeMessage:
+        text = "/togglesource 7 off"
+        from_user = SimpleNamespace(id=42)
+
+        async def answer(self, text: str) -> None:
+            answers.append(text)
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeRepo:
+        def __init__(self, session):
+            pass
+
+        async def toggle(self, source_id: int, enabled: bool):
+            assert source_id == 7
+            assert enabled is False
+            return SourceUpdateResult(
+                status=SourceUpdateStatus.UPDATED,
+                source=SimpleNamespace(id=7, is_active=False),
+            )
+
+    monkeypatch.setattr(admin, "get_session_factory", lambda: (lambda: _FakeSession()))
+    monkeypatch.setattr(admin, "SourceRepository", _FakeRepo)
+
+    await admin.toggle_source(_FakeMessage(), settings)
+
+    assert answers == ["Источник #7 выключен."]
+
+
+@pytest.mark.asyncio
+async def test_editsource_meta_requires_object() -> None:
+    settings = _settings()
+    answers: list[str] = []
+
+    class _FakeMessage:
+        text = "/editsource 7 meta []"
+        from_user = SimpleNamespace(id=42)
+
+        async def answer(self, text: str) -> None:
+            answers.append(text)
+
+    await admin.edit_source(_FakeMessage(), settings)
+
+    assert answers == ["Для поля meta требуется JSON-объект."]
+
+
+@pytest.mark.asyncio
+async def test_checksource_reports_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings()
+    answers: list[str] = []
+
+    class _FakeMessage:
+        text = "/checksource 5"
+        from_user = SimpleNamespace(id=42)
+
+        async def answer(self, text: str) -> None:
+            answers.append(text)
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeRepo:
+        def __init__(self, session):
+            pass
+
+        async def get_by_id(self, source_id: int):
+            return SimpleNamespace(id=5, name="x", type="rss", url="https://x", meta={})
+
+    class _FakeCollector:
+        def __init__(self, settings):
+            pass
+
+        async def _fetch_rss(self, source):
+            raise RuntimeError("boom")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(admin, "get_session_factory", lambda: (lambda: _FakeSession()))
+    monkeypatch.setattr(admin, "SourceRepository", _FakeRepo)
+    monkeypatch.setattr(admin, "NewsCollector", _FakeCollector)
+
+    await admin.check_source(_FakeMessage(), settings)
+
+    assert "Найдено элементов: 0" in answers[0]
+    assert "Первая ошибка: RuntimeError: boom" in answers[0]
