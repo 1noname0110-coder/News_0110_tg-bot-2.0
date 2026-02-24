@@ -217,3 +217,101 @@ async def test_publish_period_skips_duplicate_period_unless_manual_republish() -
         assert len(republished) == 2
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_publish_period_saves_filter_rule_aggregates() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with Session() as session:
+        session.add_all(
+            [
+                RawNews(
+                    source_id=1,
+                    title="ok",
+                    summary="s",
+                    url="https://example.com/1",
+                    external_id="ok",
+                    published_at=datetime(2026, 1, 1, 10, 0, 0),
+                ),
+                RawNews(
+                    source_id=1,
+                    title="bad",
+                    summary="s",
+                    url="https://example.com/2",
+                    external_id="bad",
+                    published_at=datetime(2026, 1, 1, 11, 0, 0),
+                ),
+            ]
+        )
+        await session.commit()
+
+        service = DigestService(_settings())
+
+        def _fake_evaluate(title, _summary):  # noqa: ANN001
+            if title == "ok":
+                return SimpleNamespace(
+                    accepted=True,
+                    reason="",
+                    decision_trace=[
+                        {"rule": "topic_match", "delta": 2},
+                        {"rule": "strategic_verb", "delta": 2},
+                        {"rule": "threshold_accept", "delta": 0},
+                    ],
+                )
+            return SimpleNamespace(
+                accepted=False,
+                reason="noise",
+                decision_trace=[
+                    {"rule": "low_priority", "delta": -4},
+                    {"rule": "threshold_reject", "delta": 0},
+                ],
+            )
+
+        service.filter.evaluate = _fake_evaluate
+
+        async def _fake_build_digest(_period, _accepted):  # noqa: ANN001
+            return SimpleNamespace(
+                title="digest",
+                body="body",
+                items_count=1,
+                source_breakdown={"1": 1},
+                topic_breakdown={"general": 1},
+                quality_metrics={},
+            )
+
+        async def _fake_send_digest_messages(_bot, _title, _body):  # noqa: ANN001
+            return {"status": "success", "total_chunks": 1, "sent_chunks": 1, "failed_chunks": []}
+
+        service.summarizer.build_digest = _fake_build_digest
+        service._send_digest_messages = _fake_send_digest_messages
+
+        start_dt = datetime(2026, 1, 1, 0, 0, 0)
+        end_dt = datetime(2026, 1, 2, 0, 0, 0)
+
+        await service._publish_period(bot=object(), session=session, period_type="daily", start_dt=start_dt, end_dt=end_dt)
+
+        published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
+
+        assert len(published) == 1
+        metrics = published[0].quality_metrics
+        assert metrics["filter_rule_hits"] == {
+            "topic_match": 1,
+            "strategic_verb": 1,
+            "threshold_accept": 1,
+            "low_priority": 1,
+            "threshold_reject": 1,
+        }
+        assert metrics["filter_rule_score_impact"] == {
+            "topic_match": 2,
+            "strategic_verb": 2,
+            "threshold_accept": 0,
+            "low_priority": -4,
+            "threshold_reject": 0,
+        }
+
+    await engine.dispose()

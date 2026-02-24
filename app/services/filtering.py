@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -10,79 +14,117 @@ class FilterResult:
     reason: str
     score: int
     topic: str
+    decision_trace: list[dict[str, Any]]
+
+
+@lru_cache(maxsize=1)
+def _load_filter_rules() -> dict[str, Any]:
+    config_path = Path(__file__).resolve().parent.parent / "config" / "filter_rules.json"
+    with config_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 class NewsFilter:
-    TOPIC_PATTERNS = {
-        "economy": [
-            r"ввп", r"инфляц", r"ставк[аи]", r"центробанк", r"бюджет", r"налог", r"безработиц", r"дефицит", r"профицит",
-            r"промпроизвод", r"экспорт", r"импорт", r"госдолг", r"торгов[а-я ]*баланс", r"опек|opec", r"эмбарго", r"swift",
-            r"санкц", r"курс(а|у)? рубл", r"ключев", r"минфин", r"минэконом",
-        ],
-        "politics": [
-            r"президент", r"правительств", r"парламент", r"госдум", r"совфед", r"указ", r"постановлен", r"закон", r"ратификац",
-            r"совбез", r"кабинет министров", r"минист[её]рств", r"губернатор", r"кремл", r"администрац",
-        ],
-        "international": [
-            r"международ", r"саммит", r"оон", r"ес", r"нато", r"мид", r"переговор", r"двусторон", r"многосторон",
-            r"ядерн[а-я ]*сделк", r"договор", r"дипломат", r"гренланди", r"ближн[а-я ]*восток",
-        ],
-        "conflict": [
-            r"конфликт", r"войн", r"операц", r"перемири", r"фронт", r"эскалац", r"деэскалац", r"наступлен", r"контрнаступлен",
-        ],
-    }
+    def __init__(self, threshold_profile: str = "balanced"):
+        self.rules = _load_filter_rules()
+        available_profiles = self.rules["threshold_profiles"]
+        self.threshold_profile = threshold_profile if threshold_profile in available_profiles else "balanced"
+        self.profile_rules = available_profiles[self.threshold_profile]
 
-    STRATEGIC_VERBS = [
-        r"утверд", r"принял", r"объявил", r"ввел", r"подписал", r"согласовал", r"изменил", r"договорил", r"начал", r"завершил",
-        r"согласился", r"достиг", r"расширил", r"сократил", r"одобрил", r"вступил", r"ратифиц",
-    ]
-
-    LOW_PRIORITY_PATTERNS = [
-        r"дтп", r"пожар", r"задержан", r"убийств", r"шоу", r"знаменит", r"твиттер", r"telegram-канал", r"локальн", r"район",
-        r"област[ьи]", r"матч", r"происшеств", r"муниципаль", r"местн[а-я ]*власт", r"бытов", r"гороскоп", r"клиническ",
-        r"рекордсмен", r"олимпиад", r"лыжник", r"молодост", r"самокат", r"снежн", r"ледян", r"артист", r"цирк", r"автомобил[ьяе]",
-    ]
-
-    CONFLICT_TACTICAL_PATTERNS = [
-        r"уничтожено", r"ликвидирован", r"потер[ьяи]", r"число погиб", r"единиц техники", r"ранен[оы]", r"штурм", r"дронов уничтож",
-        r"сбит[аоы] [0-9]+", r"поврежден[оы]", r"подбито",
-    ]
-
-    CLICKBAIT_PATTERNS = [r"шок", r"сенсац", r"срочно", r"невероят", r"взорвал[оаи]", r"скандал", r"тайн[аы]", r"чудо"]
+    def _add_trace(
+        self,
+        trace: list[dict[str, Any]],
+        rule: str,
+        delta: int,
+        *,
+        pattern: str | None = None,
+        topic: str | None = None,
+    ) -> None:
+        event: dict[str, Any] = {"rule": rule, "delta": delta}
+        if pattern is not None:
+            event["pattern"] = pattern
+        if topic is not None:
+            event["topic"] = topic
+        trace.append(event)
 
     def evaluate(self, title: str, summary: str) -> FilterResult:
         text = f"{title} {summary}".lower()
+        decision_trace: list[dict[str, Any]] = []
 
-        topic_scores: dict[str, int] = {topic: 0 for topic in self.TOPIC_PATTERNS}
+        topics: dict[str, list[str]] = self.rules["topics"]
+        weights: dict[str, int] = self.rules["weights"]
+
+        topic_scores: dict[str, int] = {topic: 0 for topic in topics}
         score = 0
 
-        for topic, patterns in self.TOPIC_PATTERNS.items():
+        for topic, patterns in topics.items():
             for pattern in patterns:
                 if re.search(pattern, text):
-                    topic_scores[topic] += 2
-                    score += 2
+                    topic_scores[topic] += weights["topic_match"]
+                    score += weights["topic_match"]
+                    self._add_trace(
+                        decision_trace,
+                        "topic_match",
+                        weights["topic_match"],
+                        pattern=pattern,
+                        topic=topic,
+                    )
 
-        strategic_verb_found = any(re.search(pattern, text) for pattern in self.STRATEGIC_VERBS)
-        if strategic_verb_found:
-            score += 2
-
-        for pattern in self.LOW_PRIORITY_PATTERNS:
+        strategic_verb_found = False
+        for pattern in self.rules["strategic_verbs"]:
             if re.search(pattern, text):
-                score -= 4
+                strategic_verb_found = True
+                score += weights["strategic_verb"]
+                self._add_trace(decision_trace, "strategic_verb", weights["strategic_verb"], pattern=pattern)
+                break
 
-        for pattern in self.CLICKBAIT_PATTERNS:
+        for pattern in self.rules["low_priority_patterns"]:
             if re.search(pattern, text):
-                score -= 2
+                score += weights["low_priority"]
+                self._add_trace(decision_trace, "low_priority", weights["low_priority"], pattern=pattern)
+
+        for pattern in self.rules["clickbait_patterns"]:
+            if re.search(pattern, text):
+                score += weights["clickbait"]
+                self._add_trace(decision_trace, "clickbait", weights["clickbait"], pattern=pattern)
 
         topic = max(topic_scores, key=topic_scores.get)
 
         if topic == "conflict":
-            for pattern in self.CONFLICT_TACTICAL_PATTERNS:
+            for pattern in self.rules["conflict_tactical_patterns"]:
                 if re.search(pattern, text):
-                    return FilterResult(False, "тактические детали конфликта", score, topic)
+                    self._add_trace(decision_trace, "conflict_tactical", 0, pattern=pattern, topic=topic)
+                    return FilterResult(False, "тактические детали конфликта", score, topic, decision_trace)
 
-        if score >= 4 and topic_scores[topic] >= 2 and strategic_verb_found:
-            return FilterResult(True, "релевантно", score, topic)
-        if score >= 5 and topic_scores[topic] >= 4:
-            return FilterResult(True, "релевантно", score, topic)
-        return FilterResult(False, "низкая стратегическая значимость", score, topic)
+        primary_passed = (
+            score >= self.profile_rules["primary_score_min"]
+            and topic_scores[topic] >= self.profile_rules["primary_topic_min"]
+            and (not self.profile_rules["primary_requires_strategic"] or strategic_verb_found)
+        )
+        fallback_passed = (
+            score >= self.profile_rules["fallback_score_min"]
+            and topic_scores[topic] >= self.profile_rules["fallback_topic_min"]
+        )
+
+        if primary_passed or fallback_passed:
+            decision_trace.append(
+                {
+                    "rule": "threshold_accept",
+                    "delta": 0,
+                    "profile": self.threshold_profile,
+                    "primary_passed": primary_passed,
+                    "fallback_passed": fallback_passed,
+                }
+            )
+            return FilterResult(True, "релевантно", score, topic, decision_trace)
+
+        decision_trace.append(
+            {
+                "rule": "threshold_reject",
+                "delta": 0,
+                "profile": self.threshold_profile,
+                "primary_passed": primary_passed,
+                "fallback_passed": fallback_passed,
+            }
+        )
+        return FilterResult(False, "низкая стратегическая значимость", score, topic, decision_trace)
