@@ -3,6 +3,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -11,7 +12,8 @@ os.environ.setdefault("CHANNEL_ID", "@test_channel")
 
 from app.config import Settings
 from app.db import Base
-from app.models import PublishedNews, RawNews, RejectedNews
+from app.models import DeliveryAttempt, PublishedNews, RawNews, RejectedNews
+from app.repositories import NewsRepository
 from app.services.digest_service import DigestService
 
 
@@ -68,7 +70,7 @@ async def test_publish_period_does_not_duplicate_rejected_news_on_rerun() -> Non
                 quality_metrics={},
             )
 
-        async def _fake_send_digest_messages(_bot, _title, _body):  # noqa: ANN001
+        async def _fake_send_digest_messages(_bot, _title, _body, **_kwargs):  # noqa: ANN001
             return {"status": "success", "total_chunks": 1, "sent_chunks": 1, "failed_chunks": []}
 
         service.summarizer.build_digest = _fake_build_digest
@@ -124,7 +126,7 @@ async def test_publish_period_does_not_create_record_when_delivery_failed() -> N
 
         send_attempts = 0
 
-        async def _fake_send_digest_messages(_bot, _title, _body):  # noqa: ANN001
+        async def _fake_send_digest_messages(_bot, _title, _body, **_kwargs):  # noqa: ANN001
             nonlocal send_attempts
             send_attempts += 1
             return {"status": "partial", "total_chunks": 1, "sent_chunks": 0, "failed_chunks": [1]}
@@ -182,7 +184,7 @@ async def test_publish_period_skips_duplicate_period_unless_manual_republish() -
                 quality_metrics={},
             )
 
-        async def _fake_send_digest_messages(_bot, _title, _body):  # noqa: ANN001
+        async def _fake_send_digest_messages(_bot, _title, _body, **_kwargs):  # noqa: ANN001
             sent_payloads.append((_title, _body))
             return {"status": "success", "total_chunks": 1, "sent_chunks": 1, "failed_chunks": []}
 
@@ -284,7 +286,7 @@ async def test_publish_period_saves_filter_rule_aggregates() -> None:
                 quality_metrics={},
             )
 
-        async def _fake_send_digest_messages(_bot, _title, _body):  # noqa: ANN001
+        async def _fake_send_digest_messages(_bot, _title, _body, **_kwargs):  # noqa: ANN001
             return {"status": "success", "total_chunks": 1, "sent_chunks": 1, "failed_chunks": []}
 
         service.summarizer.build_digest = _fake_build_digest
@@ -313,5 +315,71 @@ async def test_publish_period_saves_filter_rule_aggregates() -> None:
             "low_priority": -4,
             "threshold_reject": 0,
         }
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_send_digest_messages_logs_retry_and_success_attempts() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with Session() as session:
+        service = DigestService(_settings())
+        service.TELEGRAM_MAX_CHARS = 6
+
+        class _Bot:
+            def __init__(self):
+                self.calls = 0
+
+            async def send_message(self, chat_id, text):  # noqa: ANN001
+                self.calls += 1
+                if self.calls == 1:
+                    raise TelegramNetworkError(method="sendMessage", message="temporary")
+                return None
+
+        bot = _Bot()
+        repo = NewsRepository(session, timezone="UTC")
+        result = await service._send_digest_messages(bot, "t", "b", news_repo=repo, digest_id=101)
+
+        attempts = list((await session.execute(select(DeliveryAttempt).order_by(DeliveryAttempt.id.asc()))).scalars().all())
+
+        assert result["status"] == "success"
+        assert len(attempts) == 2
+        assert [a.status for a in attempts] == ["retry", "success"]
+        assert attempts[0].digest_id == 101
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_send_digest_messages_partial_success_marks_failed_chunks() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with Session() as session:
+        service = DigestService(_settings())
+
+        class _Bot:
+            async def send_message(self, chat_id, text):  # noqa: ANN001
+                raise TelegramForbiddenError(method="sendMessage", message="forbidden")
+
+        repo = NewsRepository(session, timezone="UTC")
+        result = await service._send_digest_messages(_Bot(), "t", "abcdef ghijkl", news_repo=repo, digest_id=202)
+
+        attempts = list((await session.execute(select(DeliveryAttempt).order_by(DeliveryAttempt.chunk_idx.asc(), DeliveryAttempt.id.asc()))).scalars().all())
+
+        assert result["status"] == "partial"
+        assert result["sent_chunks"] == 0
+        assert result["failed_chunks"] == [1]
+        assert len(attempts) == 1
+        assert attempts[0].status == "failed"
+        assert attempts[0].chunk_idx == 1
 
     await engine.dispose()

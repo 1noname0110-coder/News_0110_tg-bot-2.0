@@ -1,11 +1,14 @@
 import os
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 os.environ.setdefault("BOT_TOKEN", "test-token")
 os.environ.setdefault("CHANNEL_ID", "@test_channel")
 
 from app.config import Settings
+from app.db import Base
+from app.repositories import NewsRepository
 from app.services.digest_service import DigestService
 
 
@@ -91,7 +94,14 @@ async def test_send_digest_messages_adds_continuation_headers() -> None:
         async def send_message(self, chat_id, text):  # noqa: ANN001
             sent_texts.append(text)
 
-    result = await service._send_digest_messages(_FakeBot(), "Дайджест дня", body)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        repo = NewsRepository(session, timezone="UTC")
+        result = await service._send_digest_messages(_FakeBot(), "Дайджест дня", body, news_repo=repo, digest_id=None)
+    await engine.dispose()
 
     assert result["status"] == "success"
     assert result["total_chunks"] == len(sent_texts)
@@ -120,7 +130,14 @@ async def test_send_digest_messages_respects_total_limit_with_long_title_and_bod
         async def send_message(self, chat_id, text):  # noqa: ANN001
             sent_texts.append(text)
 
-    result = await service._send_digest_messages(_FakeBot(), long_title, body)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+    async with Session() as session:
+        repo = NewsRepository(session, timezone="UTC")
+        result = await service._send_digest_messages(_FakeBot(), long_title, body, news_repo=repo, digest_id=None)
+    await engine.dispose()
 
     assert result["status"] == "success"
     assert result["total_chunks"] == len(sent_texts)

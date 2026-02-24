@@ -29,6 +29,7 @@ async def main() -> None:
 
     digest_service = DigestService(settings)
     scheduler = BotScheduler(settings=settings, bot=bot, digest_service=digest_service)
+    dp["digest_service"] = digest_service
 
     logger.info("Запуск фоновых сервисов")
     scheduler.start()

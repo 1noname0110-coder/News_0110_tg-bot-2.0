@@ -130,6 +130,13 @@ class DigestService:
             allow_republish=True,
         )
 
+    async def redeliver_digest(self, bot: Bot, session: AsyncSession, digest_id: int) -> dict[str, int | str | list[int]]:
+        news_repo = NewsRepository(session, timezone=self.settings.timezone)
+        digest = await news_repo.get_published_digest(digest_id)
+        if digest is None:
+            return {"status": "not_found", "total_chunks": 0, "sent_chunks": 0, "failed_chunks": []}
+        return await self._send_digest_messages(bot, digest.title, digest.body, news_repo=news_repo, digest_id=digest_id)
+
     async def publish_weekly(self, bot: Bot, session: AsyncSession) -> None:
         tz = ZoneInfo(self.settings.timezone)
         now_local = datetime.now(tz)
@@ -229,7 +236,7 @@ class DigestService:
         quality_metrics["filter_rule_hits"] = dict(filter_rule_hits)
         quality_metrics["filter_rule_score_impact"] = dict(filter_rule_score_impact)
 
-        send_result = await self._send_digest_messages(bot, digest.title, digest.body)
+        send_result = await self._send_digest_messages(bot, digest.title, digest.body, news_repo=news_repo, digest_id=None)
         quality_metrics["delivery"] = send_result
 
         delivery_success = send_result.get("status") == "success" and int(send_result.get("sent_chunks", 0)) > 0
@@ -255,7 +262,15 @@ class DigestService:
             quality_metrics=quality_metrics,
         )
 
-    async def _send_digest_messages(self, bot: Bot, title: str, body: str) -> dict[str, int | str | list[int]]:
+    async def _send_digest_messages(
+        self,
+        bot: Bot,
+        title: str,
+        body: str,
+        *,
+        news_repo: NewsRepository,
+        digest_id: int | None,
+    ) -> dict[str, int | str | list[int]]:
         chunks = self._split_body(body)
         total = len(chunks)
         sent_chunks = 0
@@ -280,6 +295,11 @@ class DigestService:
             for attempt in range(1, self.SEND_RETRY_ATTEMPTS + 1):
                 try:
                     await bot.send_message(chat_id=self.settings.channel_id, text=header + chunk)
+                    await news_repo.add_delivery_attempt(
+                        digest_id=digest_id,
+                        chunk_idx=idx,
+                        status="success",
+                    )
                     sent_chunks += 1
                     sent = True
                     logger.info(
@@ -298,6 +318,13 @@ class DigestService:
                             attempt,
                             exc.retry_after,
                         )
+                        await news_repo.add_delivery_attempt(
+                            digest_id=digest_id,
+                            chunk_idx=idx,
+                            status="failed",
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                        )
                         break
                     retry_after = max(int(exc.retry_after), self.SEND_RETRY_DELAY_SECONDS)
                     logger.warning(
@@ -309,6 +336,13 @@ class DigestService:
                         attempt,
                         self.SEND_RETRY_ATTEMPTS,
                     )
+                    await news_repo.add_delivery_attempt(
+                        digest_id=digest_id,
+                        chunk_idx=idx,
+                        status="retry",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     await asyncio.sleep(retry_after)
                 except (TelegramNetworkError, TelegramServerError) as exc:
                     if attempt >= self.SEND_RETRY_ATTEMPTS:
@@ -318,6 +352,13 @@ class DigestService:
                             total,
                             attempt,
                             type(exc).__name__,
+                        )
+                        await news_repo.add_delivery_attempt(
+                            digest_id=digest_id,
+                            chunk_idx=idx,
+                            status="failed",
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
                         )
                         break
                     logger.warning(
@@ -329,6 +370,13 @@ class DigestService:
                         attempt,
                         self.SEND_RETRY_ATTEMPTS,
                     )
+                    await news_repo.add_delivery_attempt(
+                        digest_id=digest_id,
+                        chunk_idx=idx,
+                        status="retry",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     await asyncio.sleep(self.SEND_RETRY_DELAY_SECONDS)
                 except (TelegramBadRequest, TelegramForbiddenError) as exc:
                     logger.error(
@@ -337,9 +385,23 @@ class DigestService:
                         total,
                         type(exc).__name__,
                     )
+                    await news_repo.add_delivery_attempt(
+                        digest_id=digest_id,
+                        chunk_idx=idx,
+                        status="failed",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     break
-                except TelegramAPIError:
+                except TelegramAPIError as exc:
                     logger.exception("Дайджест: чанк %s/%s не отправлен из-за ошибки Telegram API", idx, total)
+                    await news_repo.add_delivery_attempt(
+                        digest_id=digest_id,
+                        chunk_idx=idx,
+                        status="failed",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     break
 
             if not sent:

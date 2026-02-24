@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -23,6 +23,18 @@ from app.repositories import (
 router = Router(name="admin")
 logger = logging.getLogger(__name__)
 
+
+def _format_delivery_sla_block(success_rate: float, retry_count: int, errors: list[dict[str, str | int | None]]) -> str:
+    error_lines = [
+        f"digest={row.get('digest_id')} chunk={row.get('chunk_idx')} status={row.get('status')} {row.get('error_type') or '-'}: {row.get('error_message') or '-'}"
+        for row in errors
+    ] or ["Нет"]
+    return (
+        "Delivery SLA:\n"
+        f"Success rate: {success_rate:.0%}\n"
+        f"Retry count: {retry_count}\n"
+        "Последние ошибки:\n" + "\n".join(error_lines)
+    )
 
 def _is_admin(message: Message, settings: Settings) -> bool:
     return bool(message.from_user and message.from_user.id in settings.admin_ids)
@@ -213,6 +225,32 @@ async def stat_week_live(message: Message, settings: Settings) -> None:
     await message.answer(text)
 
 
+
+
+@router.message(Command("redeliver"))
+async def redeliver(message: Message, bot: Bot, settings: Settings, digest_service) -> None:
+    if not _is_admin(message, settings):
+        await message.answer("Недостаточно прав.")
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Формат: /redeliver <digest_id>")
+        return
+
+    digest_id = int(parts[1])
+    async with get_session_factory()() as session:
+        result = await digest_service.redeliver_digest(bot=bot, session=session, digest_id=digest_id)
+
+    if result.get("status") == "not_found":
+        await message.answer(f"Дайджест #{digest_id} не найден.")
+        return
+
+    await message.answer(
+        f"Переотправка #{digest_id}: status={result.get('status')} sent={result.get('sent_chunks')}/{result.get('total_chunks')} failed={result.get('failed_chunks')}"
+    )
+
+
 @router.message(Command("quality"))
 async def quality(message: Message, settings: Settings) -> None:
     if not _is_admin(message, settings):
@@ -239,6 +277,12 @@ async def quality(message: Message, settings: Settings) -> None:
     removed_by_topic_limit = int(qm.get("removed_by_topic_limit_total", 0))
     published_items = int(qm.get("published_items_total", qm.get("selected_total", 0)))
 
+    async with get_session_factory()() as session:
+        delivery_repo = NewsRepository(session, timezone=settings.timezone)
+        sla = await delivery_repo.get_delivery_sla_stats()
+
+    sla_block = _format_delivery_sla_block(sla.success_rate, sla.retry_count, sla.last_errors)
+
     text = (
         f"Качество сводки за {today:%d.%m.%Y}\n"
         f"Воронка отбора:\n"
@@ -251,6 +295,19 @@ async def quality(message: Message, settings: Settings) -> None:
         f"После дедупликации: {qm.get('deduplicated_total', 0)}\n"
         f"Выбрано всего: {qm.get('selected_total', 0)}\n\n"
         f"Распределение тем:\n" + "\n".join(topics) + "\n\n"
-        f"Причины отклонений:\n" + "\n".join(reasons)
+        f"Причины отклонений:\n" + "\n".join(reasons) + "\n\n" + sla_block
     )
     await message.answer(text)
+
+
+@router.message(Command("delivery"))
+async def delivery(message: Message, settings: Settings) -> None:
+    if not _is_admin(message, settings):
+        await message.answer("Недостаточно прав.")
+        return
+
+    async with get_session_factory()() as session:
+        repo = NewsRepository(session, timezone=settings.timezone)
+        sla = await repo.get_delivery_sla_stats()
+
+    await message.answer(_format_delivery_sla_block(sla.success_rate, sla.retry_count, sla.last_errors))
