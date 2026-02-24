@@ -243,18 +243,13 @@ async def test_build_digest_with_llm_parses_items_and_metrics() -> None:
     class FakeCompletions:
         async def create(self, **kwargs):  # noqa: ANN003
             content = (
-                "ЗАГОЛОВОК: Дайджест\n"
-                "ПУНКТЫ:\n"
-                "1) [Экономика] Рост экспорта в АТР\n"
-                "Источник: https://example.com/1\n\n"
-                "2) [Политика] Парламент принял пакет поправок\n"
-                "Источник: https://example.com/2\n\n"
-                "3) [Международка] Подписано новое соглашение\n"
-                "Источник: https://example.com/3\n\n"
-                "4) [Технологии] Ускорен запуск спутниковой программы\n"
-                "Источник: https://example.com/4\n\n"
-                "5) [Энергетика] Согласованы новые поставки СПГ\n"
-                "Источник: https://example.com/5"
+                '{"title":"Дайджест","items":['
+                '{"topic":"Экономика","headline":"Рост экспорта в АТР на фоне новых контрактов и тарифных корректировок","url":"https://example.com/1"},'
+                '{"topic":"Политика","headline":"Парламент принял пакет поправок в бюджетное и налоговое регулирование","url":"https://example.com/2"},'
+                '{"topic":"Международка","headline":"Подписано новое межправительственное соглашение по торговому сотрудничеству","url":"https://example.com/3"},'
+                '{"topic":"Технологии","headline":"Ускорен запуск спутниковой программы с расширением производственных мощностей","url":"https://example.com/4"},'
+                '{"topic":"Энергетика","headline":"Согласованы новые поставки СПГ в рамках долгосрочных экспортных договоров","url":"https://example.com/5"}'
+                ']}'
             )
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
@@ -293,7 +288,7 @@ async def test_build_digest_with_llm_invalid_format_falls_back_to_extractive() -
     class FakeCompletions:
         async def create(self, **kwargs):  # noqa: ANN003
             return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="ЗАГОЛОВОК: Плохо\nПУНКТЫ:\n- нет ссылок"))],
+                choices=[SimpleNamespace(message=SimpleNamespace(content='{"title":"Плохо","items":[{"topic":"Экономика","headline":"Коротко","url":"https://bad.example/1"}]}'))],
             )
 
     s.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
@@ -376,3 +371,64 @@ async def test_build_digest_with_llm_exception_falls_back_to_extractive() -> Non
     assert digest.quality_metrics["selected"] == digest.items_count
     assert '<a href="https://exception.example/1">Источник</a>' in digest.body
     assert sum(digest.topic_breakdown.values()) == digest.items_count
+
+
+def test_parse_llm_response_rejects_duplicate_urls() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+    content = (
+        '{"title":"Проверка","items":['
+        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/same"},'
+        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/same"},'
+        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
+        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
+        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
+        ']}'
+    )
+
+    parsed, reason = s._parse_llm_response("daily", content, 12)
+
+    assert parsed is None
+    assert reason is not None
+    assert "duplicate url" in reason
+
+
+def test_parse_llm_response_rejects_headline_length() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+    content = (
+        '{"title":"Проверка","items":['
+        '{"topic":"Экономика","headline":"Коротко","url":"https://example.com/1"},'
+        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
+        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
+        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
+        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
+        ']}'
+    )
+
+    parsed, reason = s._parse_llm_response("daily", content, 12)
+
+    assert parsed is None
+    assert reason is not None
+    assert "headline length out of range" in reason
+
+
+def test_parse_llm_response_accepts_valid_json() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+    content = (
+        '{"title":"Проверка","items":['
+        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/1"},'
+        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
+        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
+        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
+        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
+        ']}'
+    )
+
+    parsed, reason = s._parse_llm_response("daily", content, 12)
+
+    assert reason is None
+    assert parsed is not None
+    assert parsed["title"] == "Проверка"
+    assert len(parsed["items"]) == 5

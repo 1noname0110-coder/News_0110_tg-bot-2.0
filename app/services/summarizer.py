@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 from urllib.parse import urlparse
@@ -10,6 +11,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from openai import AsyncOpenAI
+from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError, field_validator
 
 from app.config import Settings
 from app.models import RawNews
@@ -29,11 +31,40 @@ class DigestOutput:
     quality_metrics: dict[str, int | float]
 
 
+class LlmDigestItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str
+    headline: str
+    url: HttpUrl
+
+    @field_validator("topic", "headline")
+    @classmethod
+    def _strip_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("field must not be empty")
+        return normalized
+
+
+class LlmDigestResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    items: list[LlmDigestItem]
+
+    @field_validator("title")
+    @classmethod
+    def _title_required(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("title must not be empty")
+        return normalized
+
+
 class DigestSummarizer:
-    _LLM_ITEM_PATTERN = re.compile(
-        r"^\s*(\d+)\)\s*\[(?P<topic>[^\]]+)\]\s*(?P<headline>.+?)\s*\n\s*Источник:\s*(?P<url>https?://\S+)\s*$",
-        re.MULTILINE,
-    )
+    _LLM_HEADLINE_MIN_LENGTH = 15
+    _LLM_HEADLINE_MAX_LENGTH = 220
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -100,14 +131,12 @@ class DigestSummarizer:
         )
         user = (
             f"Сформируй {period_type} сводку на русском языке. "
-            "Верни строго формат:\n"
-            "ЗАГОЛОВОК: ...\n"
-            "ПУНКТЫ:\n"
-            "1) [ТЕМА] Краткий факт\n"
-            "Источник: https://...\n"
-            f"Сделай от 5 до {limit} пунктов, каждый пункт 1-3 строки.\n"
-            "Для каждого пункта ссылка `Источник` обязательна. "
-            "Не меняй структуру: номер + [ТЕМА] + текст + строка `Источник: URL`.\n"
+            "Верни СТРОГО JSON-объект без markdown и пояснений. "
+            "Формат ответа: "
+            '{"title": "...", "items": [{"topic": "...", "headline": "...", "url": "https://..."}]}. '
+            f"Сделай от 5 до {limit} пунктов. "
+            "Каждый headline — фактологичный, нейтральный и длиной 15-220 символов. "
+            "URL должен быть абсолютным (https://...).\n"
             f"Новости:\n{prompt_items}"
         )
 
@@ -117,48 +146,51 @@ class DigestSummarizer:
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
         content = response.choices[0].message.content or ""
-        return self._parse_llm_response(period_type, content, limit)
+        parsed, reason = self._parse_llm_response(period_type, content, limit)
+        if parsed is None:
+            logger.warning("LLM JSON validation failed: %s", reason)
+        return parsed
 
-    def _parse_llm_response(self, period_type: str, content: str, limit: int) -> dict[str, Any] | None:
-        title = "Ежедневная сводка" if period_type == "daily" else "Недельная сводка"
-        if "ЗАГОЛОВОК:" in content:
-            parsed_title = content.split("ЗАГОЛОВОК:", 1)[1].splitlines()[0].strip()
-            if parsed_title:
-                title = parsed_title
+    def _parse_llm_response(self, period_type: str, content: str, limit: int) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            return None, f"invalid JSON: {exc}"
 
-        body = content.split("ПУНКТЫ:", 1)[-1].strip() if "ПУНКТЫ:" in content else content.strip()
-        matches = list(self._LLM_ITEM_PATTERN.finditer(body))
-        if not matches:
-            return None
+        try:
+            parsed = LlmDigestResponse.model_validate(payload)
+        except ValidationError as exc:
+            return None, f"schema validation error: {exc}"
 
-        items = []
+        if not 5 <= len(parsed.items) <= limit:
+            return None, f"items count out of range: {len(parsed.items)}"
+
+        items: list[dict[str, Any]] = []
         topic_breakdown: Counter[str] = Counter()
         lines: list[str] = []
+        seen_urls: set[str] = set()
 
-        for expected_number, match in enumerate(matches, start=1):
-            item_number = int(match.group(1))
-            if item_number != expected_number:
-                return None
+        for item_number, item in enumerate(parsed.items, start=1):
+            topic = item.topic.strip()
+            headline = item.headline.strip()
+            source_url = str(item.url).strip()
 
-            topic = match.group("topic").strip()
-            headline = match.group("headline").strip()
-            source_url = match.group("url").strip()
-            if not topic or not headline or not source_url:
-                return None
+            if not (self._LLM_HEADLINE_MIN_LENGTH <= len(headline) <= self._LLM_HEADLINE_MAX_LENGTH):
+                return None, f"headline length out of range at item {item_number}"
+            if source_url in seen_urls:
+                return None, f"duplicate url at item {item_number}: {source_url}"
+            seen_urls.add(source_url)
 
             topic_breakdown[self._normalize(topic)] += 1
             lines.append(f"{item_number}) [{topic}] {headline}\nИсточник: {source_url}")
             items.append({"number": item_number, "topic": topic, "headline": headline, "source_url": source_url})
 
-        if not 5 <= len(items) <= limit:
-            return None
-
         return {
-            "title": title,
+            "title": parsed.title,
             "body": "\n\n".join(lines),
             "items": items,
             "topic_breakdown": dict(topic_breakdown),
-        }
+        }, None
 
     def _build_extractive(self, period_type: str, news: list[RawNews], source_breakdown: dict[str, int]) -> DigestOutput:
         default_cap = 12 if period_type == "daily" else 15
