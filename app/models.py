@@ -81,6 +81,22 @@ class DailyStats(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class DeliveryAttempt(Base):
+    __tablename__ = "delivery_attempts"
+    __table_args__ = (
+        Index("ix_delivery_attempts_digest_chunk", "digest_id", "chunk_idx"),
+        Index("ix_delivery_attempts_attempted_at", "attempted_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    digest_id: Mapped[int | None] = mapped_column(ForeignKey("published_news.id"), nullable=True)
+    chunk_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class WeeklyStats(Base):
     __tablename__ = "stats_weekly"
 

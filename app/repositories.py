@@ -12,10 +12,16 @@ from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import DailyStats, PublishedNews, RawNews, RejectedNews, Source, WeeklyStats
+from app.models import DailyStats, DeliveryAttempt, PublishedNews, RawNews, RejectedNews, Source, WeeklyStats
 
 ALLOWED_SOURCE_TYPES = {"rss", "site", "api"}
 
+
+@dataclass(slots=True)
+class DeliverySLAStats:
+    success_rate: float
+    retry_count: int
+    last_errors: list[dict[str, str | int | None]]
 
 class SourceCreateStatus(str, Enum):
     CREATED = "created"
@@ -212,6 +218,79 @@ class NewsRepository:
                 await self.session.commit()
 
         return inserted
+
+    async def add_delivery_attempt(
+        self,
+        *,
+        digest_id: int | None,
+        chunk_idx: int,
+        status: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> DeliveryAttempt:
+        row = DeliveryAttempt(
+            digest_id=digest_id,
+            chunk_idx=chunk_idx,
+            status=status,
+            error_type=error_type,
+            error_message=error_message,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def get_delivery_sla_stats(self, limit_errors: int = 5) -> DeliverySLAStats:
+        attempts_q = await self.session.execute(select(DeliveryAttempt).order_by(DeliveryAttempt.id.asc()))
+        attempts = list(attempts_q.scalars().all())
+
+        if not attempts:
+            return DeliverySLAStats(success_rate=0.0, retry_count=0, last_errors=[])
+
+        success_count = sum(1 for attempt in attempts if attempt.status == "success")
+        retry_count = sum(1 for attempt in attempts if attempt.status == "retry")
+
+        error_q = await self.session.execute(
+            select(DeliveryAttempt)
+            .where(DeliveryAttempt.status != "success")
+            .order_by(DeliveryAttempt.attempted_at.desc(), DeliveryAttempt.id.desc())
+            .limit(limit_errors)
+        )
+        last_errors = [
+            {
+                "digest_id": row.digest_id,
+                "chunk_idx": row.chunk_idx,
+                "status": row.status,
+                "error_type": row.error_type,
+                "error_message": row.error_message,
+            }
+            for row in error_q.scalars().all()
+        ]
+        return DeliverySLAStats(
+            success_rate=round(success_count / len(attempts), 4),
+            retry_count=retry_count,
+            last_errors=last_errors,
+        )
+
+    async def get_delivery_attempts_by_digest(self, digest_id: int) -> list[DeliveryAttempt]:
+        result = await self.session.execute(
+            select(DeliveryAttempt)
+            .where(DeliveryAttempt.digest_id == digest_id)
+            .order_by(DeliveryAttempt.chunk_idx.asc(), DeliveryAttempt.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def get_published_digest(self, digest_id: int) -> PublishedNews | None:
+        return await self.session.get(PublishedNews, digest_id)
+
+    async def get_recent_delivery_failures(self, limit: int = 5) -> list[DeliveryAttempt]:
+        result = await self.session.execute(
+            select(DeliveryAttempt)
+            .where(DeliveryAttempt.status != "success")
+            .order_by(DeliveryAttempt.attempted_at.desc(), DeliveryAttempt.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
     async def publish_digest(
         self,
