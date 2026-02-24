@@ -40,7 +40,7 @@ class DigestService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.collector = NewsCollector(settings)
-        self.filter = NewsFilter()
+        self.filter = NewsFilter(settings.filter_threshold_profile)
         self.summarizer = DigestSummarizer(settings)
 
     async def aclose(self) -> None:
@@ -197,9 +197,16 @@ class DigestService:
         accepted = []
         reject_entries: list[tuple[int, int, str]] = []
         rejection_reasons = Counter()
+        filter_rule_hits = Counter()
+        filter_rule_score_impact = Counter()
 
         for item in raw_items:
             result = self.filter.evaluate(item.title, item.summary)
+            for trace_entry in getattr(result, "decision_trace", []):
+                rule = str(trace_entry.get("rule", "unknown"))
+                filter_rule_hits[rule] += 1
+                filter_rule_score_impact[rule] += int(trace_entry.get("delta", 0))
+
             if result.accepted:
                 accepted.append(item)
             else:
@@ -219,6 +226,8 @@ class DigestService:
         quality_metrics["accepted_total"] = len(accepted)
         quality_metrics["rejected_total"] = len(raw_items) - len(accepted)
         quality_metrics["rejection_reasons"] = dict(rejection_reasons)
+        quality_metrics["filter_rule_hits"] = dict(filter_rule_hits)
+        quality_metrics["filter_rule_score_impact"] = dict(filter_rule_score_impact)
 
         send_result = await self._send_digest_messages(bot, digest.title, digest.body)
         quality_metrics["delivery"] = send_result

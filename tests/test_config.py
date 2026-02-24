@@ -58,3 +58,15 @@ def test_rejects_non_numeric_admin_ids() -> None:
         assert False, "Expected validation error for non-numeric ADMIN_USER_IDS"
     except ValueError as exc:
         assert "Некорректный формат ADMIN_USER_IDS" in str(exc)
+
+
+def test_filter_profile_defaults_to_balanced() -> None:
+    settings = Settings.model_validate({"BOT_TOKEN": "token", "CHANNEL_ID": "-1001234567890"})
+    assert settings.filter_threshold_profile == "balanced"
+
+
+def test_accepts_custom_filter_profile() -> None:
+    settings = Settings.model_validate(
+        {"BOT_TOKEN": "token", "CHANNEL_ID": "-1001234567890", "FILTER_THRESHOLD_PROFILE": "strict"}
+    )
+    assert settings.filter_threshold_profile == "strict"
