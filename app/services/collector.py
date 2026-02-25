@@ -287,9 +287,29 @@ class NewsCollector:
             )
             raise
 
-        items_data = payload.get("items", payload if isinstance(payload, list) else [])
+        if isinstance(payload, dict):
+            items_data = payload.get("items", [])
+        elif isinstance(payload, list):
+            items_data = payload
+        else:
+            logger.warning(
+                "API источник %s вернул неожиданный формат payload type=%s",
+                source.url,
+                type(payload).__name__,
+            )
+            items_data = []
+
         out = []
         for idx, item in enumerate(items_data[:80]):
+            if not isinstance(item, dict):
+                logger.warning(
+                    "API источник %s: элемент index=%s пропущен из-за неожиданного типа item=%s",
+                    source.url,
+                    idx,
+                    type(item).__name__,
+                )
+                continue
+
             title = str(item.get("title") or item.get("name") or "Без заголовка")
             summary = str(item.get("summary") or item.get("description") or "")
             url = str(item.get("url") or source.url)
