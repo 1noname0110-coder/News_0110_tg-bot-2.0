@@ -61,10 +61,13 @@ cp .env.example .env
 
 ## Важные переменные `.env`
 
+> Обязательные переменные для старта: `BOT_TOKEN`, `CHANNEL_ID` (или `CHAT_ID` / `TELEGRAM_CHANNEL_ID`) и `ADMIN_USER_IDS`.
+> Если `CHANNEL_ID` или `ADMIN_USER_IDS` отсутствуют или пустые, приложение завершит запуск с ошибкой валидации конфигурации.
+
 - `BOT_TOKEN` — токен бота.
 - `CHANNEL_ID` — id канала (`@channel_name` или числовой id).
   - также поддержаны `CHAT_ID` и `TELEGRAM_CHANNEL_ID` как альтернативные имена переменной.
-- `ADMIN_USER_IDS` — Telegram user id админов через запятую (только числа), например: `123456789,987654321`.
+- `ADMIN_USER_IDS` — **обязательный** список Telegram user id админов через запятую (только числа), например: `123456789,987654321`.
 - `DATABASE_URL`:
   - SQLite: `sqlite+aiosqlite:///./news_bot.db`
   - PostgreSQL: `postgresql+asyncpg://user:pass@host:5432/dbname`

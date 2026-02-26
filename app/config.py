@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     bot_token: str = Field(alias="BOT_TOKEN")
-    channel_id: str = Field(default="-1003531603514", alias="CHANNEL_ID")
-    admin_user_ids: str = Field(default="5322247321", alias="ADMIN_USER_IDS")
+    channel_id: str = Field(alias="CHANNEL_ID")
+    admin_user_ids: str = Field(alias="ADMIN_USER_IDS")
 
     database_url: str = Field(default="sqlite+aiosqlite:///./news_bot.db", alias="DATABASE_URL")
     timezone: str = Field(default="Asia/Vladivostok", alias="TIMEZONE")
@@ -79,8 +79,11 @@ class Settings(BaseSettings):
             return data
 
         raw_admin_ids = data.get("ADMIN_USER_IDS")
-        if raw_admin_ids is None:
-            return data
+        if raw_admin_ids is None or not str(raw_admin_ids).strip():
+            raise ValueError(
+                "ADMIN_USER_IDS не задан. Укажите ADMIN_USER_IDS в переменных окружения "
+                "(список числовых Telegram user id через запятую)."
+            )
 
         invalid_values = [
             part.strip()
@@ -98,9 +101,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def ensure_required_runtime_values(self) -> "Settings":
-        if not self.channel_id.strip():
+        if not self.channel_id or not self.channel_id.strip():
             raise ValueError(
                 "CHANNEL_ID не задан. Укажите CHANNEL_ID, CHAT_ID или TELEGRAM_CHANNEL_ID в переменных окружения."
+            )
+
+        if not self.admin_user_ids or not self.admin_user_ids.strip():
+            raise ValueError(
+                "ADMIN_USER_IDS не задан. Укажите ADMIN_USER_IDS в переменных окружения "
+                "(список числовых Telegram user id через запятую)."
             )
         return self
 
