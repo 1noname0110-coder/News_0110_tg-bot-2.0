@@ -16,6 +16,18 @@ from app.models import DailyStats, DeliveryAttempt, PublishedNews, RawNews, Reje
 
 ALLOWED_SOURCE_TYPES = {"rss", "site", "api"}
 
+def source_trust_coefficient(meta: dict | None) -> float:
+    if not isinstance(meta, dict):
+        return 1.0
+
+    raw_value = meta.get("trust_coefficient", 1.0)
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return 1.0
+
+    return min(1.5, max(0.5, value))
+
 
 @dataclass(slots=True)
 class DeliverySLAStats:

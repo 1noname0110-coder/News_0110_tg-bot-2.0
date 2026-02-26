@@ -145,12 +145,19 @@ class DigestSummarizer:
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
         content = response.choices[0].message.content or ""
-        parsed, reason = self._parse_llm_response(period_type, content, limit)
+        allowed_urls = {item.url.strip() for item, _result in news if item.url.strip()}
+        parsed, reason = self._parse_llm_response(period_type, content, limit, allowed_urls)
         if parsed is None:
             logger.warning("LLM JSON validation failed: %s", reason)
         return parsed
 
-    def _parse_llm_response(self, period_type: str, content: str, limit: int) -> tuple[dict[str, Any] | None, str | None]:
+    def _parse_llm_response(
+        self,
+        period_type: str,
+        content: str,
+        limit: int,
+        allowed_urls: set[str],
+    ) -> tuple[dict[str, Any] | None, str | None]:
         try:
             payload = json.loads(content)
         except json.JSONDecodeError as exc:
@@ -178,6 +185,8 @@ class DigestSummarizer:
                 return None, f"headline length out of range at item {item_number}"
             if source_url in seen_urls:
                 return None, f"duplicate url at item {item_number}: {source_url}"
+            if source_url not in allowed_urls:
+                return None, f"url not in source news at item {item_number}: {source_url}"
             seen_urls.add(source_url)
 
             topic_breakdown[self._normalize(topic)] += 1

@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 
 from app.db import Base
 from app.models import PublishedNews, RawNews, RejectedNews, Source
-from app.repositories import NewsRepository, SourceCreateStatus, SourceRepository, normalize_http_url
+from app.repositories import NewsRepository, SourceCreateStatus, SourceRepository, normalize_http_url, source_trust_coefficient
 
 
 def test_source_create_returns_duplicate_status_on_duplicate_name() -> None:
@@ -572,3 +572,12 @@ def test_source_list_sources_filters_by_active() -> None:
         await engine.dispose()
 
     asyncio.run(_run())
+
+
+def test_source_trust_coefficient_defaults_and_bounds() -> None:
+    assert source_trust_coefficient(None) == 1.0
+    assert source_trust_coefficient({}) == 1.0
+    assert source_trust_coefficient({"trust_coefficient": "bad"}) == 1.0
+    assert source_trust_coefficient({"trust_coefficient": 2.5}) == 1.5
+    assert source_trust_coefficient({"trust_coefficient": 0.2}) == 0.5
+

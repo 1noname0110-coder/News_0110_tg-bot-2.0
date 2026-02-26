@@ -59,7 +59,7 @@ async def test_publish_period_does_not_duplicate_rejected_news_on_rerun() -> Non
         await session.commit()
 
         service = DigestService(_settings())
-        service.filter.evaluate = lambda _title, _summary: SimpleNamespace(accepted=False, reason="noise")
+        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=False, reason="noise", decision_trace=[])
         async def _fake_build_digest(_period, _accepted):  # noqa: ANN001
             return SimpleNamespace(
                 title="digest",
@@ -112,7 +112,7 @@ async def test_publish_period_does_not_create_record_when_delivery_failed() -> N
         await session.commit()
 
         service = DigestService(_settings())
-        service.filter.evaluate = lambda _title, _summary: SimpleNamespace(accepted=True, reason="")
+        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=True, reason="", decision_trace=[])
 
         async def _fake_build_digest(_period, _accepted):  # noqa: ANN001
             return SimpleNamespace(
@@ -170,7 +170,7 @@ async def test_publish_period_skips_duplicate_period_unless_manual_republish() -
         await session.commit()
 
         service = DigestService(_settings())
-        service.filter.evaluate = lambda _title, _summary: SimpleNamespace(accepted=True, reason="")
+        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=True, reason="", decision_trace=[])
 
         sent_payloads: list[tuple[str, str]] = []
 
@@ -254,7 +254,7 @@ async def test_publish_period_saves_filter_rule_aggregates() -> None:
 
         service = DigestService(_settings())
 
-        def _fake_evaluate(title, _summary):  # noqa: ANN001
+        def _fake_evaluate(title, _summary, **_kwargs):  # noqa: ANN001
             if title == "ok":
                 return SimpleNamespace(
                     accepted=True,
@@ -315,6 +315,7 @@ async def test_publish_period_saves_filter_rule_aggregates() -> None:
             "low_priority": -4,
             "threshold_reject": 0,
         }
+        assert metrics["suspicious_rules_rejection_share"] == 1.0
 
     await engine.dispose()
 
