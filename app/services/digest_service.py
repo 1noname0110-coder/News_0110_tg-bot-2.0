@@ -32,8 +32,9 @@ logger = logging.getLogger(__name__)
 
 class DigestService:
     TELEGRAM_MESSAGE_MAX = 4096
-    TELEGRAM_MAX_CHARS = TELEGRAM_MESSAGE_MAX
     DIGEST_TITLE_MAX_CHARS = 500
+    CHUNK_HEADER_SEPARATOR = "\n\n"
+    MIN_CHUNK_BODY_CHARS = 1
     SEND_RETRY_ATTEMPTS = 4
     SEND_RETRY_DELAY_SECONDS = 2
     COLLECT_MAX_CONCURRENCY = 8
@@ -438,7 +439,8 @@ class DigestService:
         }
 
     def _split_body(self, body: str) -> list[str]:
-        if len(body) <= self.TELEGRAM_MAX_CHARS:
+        chunk_limit = self.TELEGRAM_MESSAGE_MAX
+        if len(body) <= chunk_limit:
             return [body]
 
         blocks = self._extract_logical_blocks(body)
@@ -446,14 +448,14 @@ class DigestService:
         current = ""
 
         for block in blocks:
-            if len(block) > self.TELEGRAM_MAX_CHARS:
+            if len(block) > chunk_limit:
                 oversized_parts = self._split_oversized_block(block)
             else:
                 oversized_parts = [block]
 
             for part in oversized_parts:
                 candidate = part if not current else f"{current}\n\n{part}"
-                if len(candidate) <= self.TELEGRAM_MAX_CHARS and self._has_balanced_anchor_tags(candidate):
+                if len(candidate) <= chunk_limit and self._has_balanced_anchor_tags(candidate):
                     current = candidate
                     continue
 
@@ -483,12 +485,13 @@ class DigestService:
         return blocks or [body]
 
     def _split_oversized_block(self, block: str) -> list[str]:
+        chunk_limit = self.TELEGRAM_MESSAGE_MAX
         parts: list[str] = []
         current = ""
 
         for token in self._tokenize_block(block):
             candidate = f"{current}{token}"
-            if len(candidate) <= self.TELEGRAM_MAX_CHARS:
+            if len(candidate) <= chunk_limit:
                 current = candidate
                 continue
 
@@ -526,10 +529,14 @@ class DigestService:
 
     def _build_chunk_header(self, title: str, idx: int, total: int) -> str:
         suffix = "" if idx == 1 else f" (продолжение {idx}/{total})"
-        max_header_text_len = self.TELEGRAM_MESSAGE_MAX - 3  # + "\n\n" and минимум 1 символ тела
+        max_header_text_len = (
+            self.TELEGRAM_MESSAGE_MAX
+            - len(self.CHUNK_HEADER_SEPARATOR)
+            - self.MIN_CHUNK_BODY_CHARS
+        )
         allowed_title_len = max(1, max_header_text_len - len(suffix))
         safe_title = self._truncate_text(title, allowed_title_len)
-        return f"{safe_title}{suffix}\n\n"
+        return f"{safe_title}{suffix}{self.CHUNK_HEADER_SEPARATOR}"
 
     def _fit_chunk_to_budget(self, chunk: str, budget: int) -> str:
         if budget <= 0:
