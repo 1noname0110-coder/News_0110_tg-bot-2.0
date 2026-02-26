@@ -280,7 +280,7 @@ async def test_build_digest_with_llm_parses_items_and_metrics() -> None:
             source_id=i,
             title=f"Новость {i}",
             summary=f"Описание {i}",
-            url=f"https://source.example/{i}",
+            url=f"https://example.com/{i}",
             external_id=f"ext-{i}",
             published_at=base + timedelta(minutes=i),
         )
@@ -402,7 +402,7 @@ def test_parse_llm_response_rejects_duplicate_urls() -> None:
         ']}'
     )
 
-    parsed, reason = s._parse_llm_response("daily", content, 12)
+    parsed, reason = s._parse_llm_response("daily", content, 12, {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5", "https://example.com/same"})
 
     assert parsed is None
     assert reason is not None
@@ -422,7 +422,7 @@ def test_parse_llm_response_rejects_headline_length() -> None:
         ']}'
     )
 
-    parsed, reason = s._parse_llm_response("daily", content, 12)
+    parsed, reason = s._parse_llm_response("daily", content, 12, {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5"})
 
     assert parsed is None
     assert reason is not None
@@ -442,9 +442,34 @@ def test_parse_llm_response_accepts_valid_json() -> None:
         ']}'
     )
 
-    parsed, reason = s._parse_llm_response("daily", content, 12)
+    parsed, reason = s._parse_llm_response("daily", content, 12, {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5"})
 
     assert reason is None
     assert parsed is not None
     assert parsed["title"] == "Проверка"
     assert len(parsed["items"]) == 5
+
+
+def test_parse_llm_response_rejects_url_not_from_news() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+    content = (
+        '{"title":"Проверка","items":['
+        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/1"},'
+        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
+        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
+        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
+        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://other.example.com/5"}'
+        ']}'
+    )
+
+    parsed, reason = s._parse_llm_response(
+        "daily",
+        content,
+        12,
+        {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4"},
+    )
+
+    assert parsed is None
+    assert reason is not None
+    assert "url not in source news" in reason

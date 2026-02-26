@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.models import RawNews
 from app.periods import get_calendar_day_bounds, get_calendar_week_bounds
-from app.repositories import NewsRepository, SourceRepository
+from app.repositories import NewsRepository, SourceRepository, source_trust_coefficient
 from app.services.collector import NewsCollector
 from app.services.filtering import FilterResult, NewsFilter
 from app.services.summarizer import DigestSummarizer
@@ -201,15 +201,20 @@ class DigestService:
             return
 
         period_limit = self.settings.max_period_news_daily if period_type == "daily" else self.settings.max_period_news_weekly
+        sources = await SourceRepository(session).list_active()
+        source_map = {source.id: source for source in sources}
         raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
         accepted: list[tuple[RawNews, FilterResult]] = []
         reject_entries: list[tuple[int, int, str]] = []
         rejection_reasons = Counter()
         filter_rule_hits = Counter()
         filter_rule_score_impact = Counter()
+        suspicious_rejections = 0
 
         for item in raw_items:
-            result = self.filter.evaluate(item.title, item.summary)
+            source = source_map.get(item.source_id)
+            source_trust = source_trust_coefficient(getattr(source, "meta", {}))
+            result = self.filter.evaluate(item.title, item.summary, source_trust=source_trust)
             for trace_entry in getattr(result, "decision_trace", []):
                 rule = str(trace_entry.get("rule", "unknown"))
                 filter_rule_hits[rule] += 1
@@ -220,6 +225,12 @@ class DigestService:
             else:
                 rejection_reasons[result.reason] += 1
                 reject_entries.append((item.id, item.source_id, result.reason))
+                has_suspicious_rule = any(
+                    entry.get("rule") in {"low_priority", "clickbait", "stop_pattern"}
+                    for entry in getattr(result, "decision_trace", [])
+                )
+                if has_suspicious_rule:
+                    suspicious_rejections += 1
 
         await news_repo.reject_many(reject_entries)
 
@@ -236,6 +247,9 @@ class DigestService:
         quality_metrics["rejection_reasons"] = dict(rejection_reasons)
         quality_metrics["filter_rule_hits"] = dict(filter_rule_hits)
         quality_metrics["filter_rule_score_impact"] = dict(filter_rule_score_impact)
+        quality_metrics["suspicious_rules_rejection_share"] = (
+            suspicious_rejections / quality_metrics["rejected_total"] if quality_metrics["rejected_total"] else 0.0
+        )
 
         send_result = await self._send_digest_messages(bot, digest.title, digest.body, news_repo=news_repo, digest_id=None)
         quality_metrics["delivery"] = send_result

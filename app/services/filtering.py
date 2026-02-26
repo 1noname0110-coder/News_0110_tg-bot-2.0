@@ -47,7 +47,11 @@ class NewsFilter:
             event["topic"] = topic
         trace.append(event)
 
-    def evaluate(self, title: str, summary: str) -> FilterResult:
+    @staticmethod
+    def _normalize_source_trust(value: float) -> float:
+        return min(1.5, max(0.5, value))
+
+    def evaluate(self, title: str, summary: str, source_trust: float = 1.0) -> FilterResult:
         text = f"{title} {summary}".lower()
         decision_trace: list[dict[str, Any]] = []
 
@@ -60,15 +64,35 @@ class NewsFilter:
         for topic, patterns in topics.items():
             for pattern in patterns:
                 if re.search(pattern, text):
-                    topic_scores[topic] += weights["topic_match"]
-                    score += weights["topic_match"]
+                    topic_scores[topic] += weights["topic_signal"]
+                    score += weights["topic_signal"]
                     self._add_trace(
                         decision_trace,
                         "topic_match",
-                        weights["topic_match"],
+                        weights["topic_signal"],
                         pattern=pattern,
                         topic=topic,
                     )
+
+        for pattern in self.rules.get("topic_boundary_patterns", []):
+            if re.search(pattern, text):
+                score += weights["topic_boundary"]
+                self._add_trace(decision_trace, "topic_boundary", weights["topic_boundary"], pattern=pattern)
+
+        for pattern in self.rules.get("official_entity_patterns", []):
+            if re.search(pattern, text):
+                score += weights["official_entities"]
+                self._add_trace(decision_trace, "official_entities", weights["official_entities"], pattern=pattern)
+
+        for pattern in self.rules.get("event_scale_patterns", []):
+            if re.search(pattern, text):
+                score += weights["event_scale"]
+                self._add_trace(decision_trace, "event_scale", weights["event_scale"], pattern=pattern)
+
+        for pattern in self.rules.get("stop_patterns", []):
+            if re.search(pattern, text):
+                score += weights["stop_pattern"]
+                self._add_trace(decision_trace, "stop_pattern", weights["stop_pattern"], pattern=pattern)
 
         strategic_verb_found = False
         for pattern in self.rules["strategic_verbs"]:
@@ -80,13 +104,19 @@ class NewsFilter:
 
         for pattern in self.rules["low_priority_patterns"]:
             if re.search(pattern, text):
-                score += weights["low_priority"]
-                self._add_trace(decision_trace, "low_priority", weights["low_priority"], pattern=pattern)
+                score += weights["locality_penalty"]
+                self._add_trace(decision_trace, "low_priority", weights["locality_penalty"], pattern=pattern)
 
         for pattern in self.rules["clickbait_patterns"]:
             if re.search(pattern, text):
-                score += weights["clickbait"]
-                self._add_trace(decision_trace, "clickbait", weights["clickbait"], pattern=pattern)
+                score += weights["clickbait_penalty"]
+                self._add_trace(decision_trace, "clickbait", weights["clickbait_penalty"], pattern=pattern)
+
+        trust = self._normalize_source_trust(source_trust)
+        trust_delta = round((trust - 1.0) * weights["source_trust_factor"])
+        if trust_delta != 0:
+            score += trust_delta
+            self._add_trace(decision_trace, "source_trust", trust_delta)
 
         topic = max(topic_scores, key=topic_scores.get)
 
