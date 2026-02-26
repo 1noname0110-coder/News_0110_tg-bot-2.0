@@ -190,7 +190,10 @@ class DigestSummarizer:
             seen_urls.add(source_url)
 
             topic_breakdown[self._normalize(topic)] += 1
-            lines.append(f"{item_number}) [{topic}] {headline}\nИсточник: {source_url}")
+            safe_topic = html.escape(topic)
+            safe_headline = html.escape(headline)
+            safe_url = html.escape(source_url, quote=True)
+            lines.append(f"{item_number}) [{safe_topic}] {safe_headline}\n<a href=\"{safe_url}\">Источник</a>")
             items.append({"number": item_number, "topic": topic, "headline": headline, "source_url": source_url})
 
         return {
