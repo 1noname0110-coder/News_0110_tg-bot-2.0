@@ -30,6 +30,43 @@ class NewsFilter:
         available_profiles = self.rules["threshold_profiles"]
         self.threshold_profile = threshold_profile if threshold_profile in available_profiles else "balanced"
         self.profile_rules = available_profiles[self.threshold_profile]
+        self.compiled_topics = {
+            topic: self._compile_patterns(patterns, group_name=f"topics.{topic}")
+            for topic, patterns in self.rules["topics"].items()
+        }
+        self.compiled_strategic_verbs = self._compile_patterns(
+            self.rules["strategic_verbs"], group_name="strategic_verbs"
+        )
+        self.compiled_low_priority_patterns = self._compile_patterns(
+            self.rules["low_priority_patterns"], group_name="low_priority_patterns"
+        )
+        self.compiled_clickbait_patterns = self._compile_patterns(
+            self.rules["clickbait_patterns"], group_name="clickbait_patterns"
+        )
+        self.compiled_conflict_tactical_patterns = self._compile_patterns(
+            self.rules["conflict_tactical_patterns"], group_name="conflict_tactical_patterns"
+        )
+
+    @classmethod
+    def _compile_patterns(cls, patterns: list[str], *, group_name: str) -> list[re.Pattern[str]]:
+        compiled: list[re.Pattern[str]] = []
+        for pattern in patterns:
+            cls._validate_regex_pattern(pattern, group_name=group_name)
+            compiled.append(re.compile(pattern))
+        return compiled
+
+    @staticmethod
+    def _validate_regex_pattern(pattern: str, *, group_name: str) -> None:
+        nested_quantifier_re = re.compile(r"\((?:\?[:=!<][^)]*)?[^()]*[+*][^()]*\)[+*]")
+        repeated_group_re = re.compile(r"\([^)]*\{\d+(?:,\d*)?\}[^)]*\)\{\d+(?:,\d*)?\}")
+        unbounded_wildcard_re = re.compile(r"(?:\.\*|\.\+){2,}")
+
+        max_pattern_length = 400
+        if len(pattern) > max_pattern_length:
+            raise ValueError(f"Unsafe regex pattern in {group_name}: pattern is too long")
+
+        if nested_quantifier_re.search(pattern) or repeated_group_re.search(pattern) or unbounded_wildcard_re.search(pattern):
+            raise ValueError(f"Unsafe regex pattern in {group_name}: {pattern!r}")
 
     def _add_trace(
         self,
@@ -55,22 +92,21 @@ class NewsFilter:
         text = f"{title} {summary}".lower()
         decision_trace: list[dict[str, Any]] = []
 
-        topics: dict[str, list[str]] = self.rules["topics"]
         weights: dict[str, int] = self.rules["weights"]
 
-        topic_scores: dict[str, int] = {topic: 0 for topic in topics}
+        topic_scores: dict[str, int] = {topic: 0 for topic in self.compiled_topics}
         score = 0
 
-        for topic, patterns in topics.items():
+        for topic, patterns in self.compiled_topics.items():
             for pattern in patterns:
-                if re.search(pattern, text):
+                if pattern.search(text):
                     topic_scores[topic] += weights["topic_signal"]
                     score += weights["topic_signal"]
                     self._add_trace(
                         decision_trace,
                         "topic_match",
                         weights["topic_signal"],
-                        pattern=pattern,
+                        pattern=pattern.pattern,
                         topic=topic,
                     )
 
@@ -95,22 +131,37 @@ class NewsFilter:
                 self._add_trace(decision_trace, "stop_pattern", weights["stop_pattern"], pattern=pattern)
 
         strategic_verb_found = False
-        for pattern in self.rules["strategic_verbs"]:
-            if re.search(pattern, text):
+        for pattern in self.compiled_strategic_verbs:
+            if pattern.search(text):
                 strategic_verb_found = True
                 score += weights["strategic_verb"]
-                self._add_trace(decision_trace, "strategic_verb", weights["strategic_verb"], pattern=pattern)
+                self._add_trace(
+                    decision_trace,
+                    "strategic_verb",
+                    weights["strategic_verb"],
+                    pattern=pattern.pattern,
+                )
                 break
 
-        for pattern in self.rules["low_priority_patterns"]:
-            if re.search(pattern, text):
+        for pattern in self.compiled_low_priority_patterns:
+            if pattern.search(text):
                 score += weights["locality_penalty"]
-                self._add_trace(decision_trace, "low_priority", weights["locality_penalty"], pattern=pattern)
+                self._add_trace(
+                    decision_trace,
+                    "low_priority",
+                    weights["locality_penalty"],
+                    pattern=pattern.pattern,
+                )
 
-        for pattern in self.rules["clickbait_patterns"]:
-            if re.search(pattern, text):
+        for pattern in self.compiled_clickbait_patterns:
+            if pattern.search(text):
                 score += weights["clickbait_penalty"]
-                self._add_trace(decision_trace, "clickbait", weights["clickbait_penalty"], pattern=pattern)
+                self._add_trace(
+                    decision_trace,
+                    "clickbait",
+                    weights["clickbait_penalty"],
+                    pattern=pattern.pattern,
+                )
 
         trust = self._normalize_source_trust(source_trust)
         trust_delta = round((trust - 1.0) * weights["source_trust_factor"])
@@ -121,9 +172,9 @@ class NewsFilter:
         topic = max(topic_scores, key=topic_scores.get)
 
         if topic == "conflict":
-            for pattern in self.rules["conflict_tactical_patterns"]:
-                if re.search(pattern, text):
-                    self._add_trace(decision_trace, "conflict_tactical", 0, pattern=pattern, topic=topic)
+            for pattern in self.compiled_conflict_tactical_patterns:
+                if pattern.search(text):
+                    self._add_trace(decision_trace, "conflict_tactical", 0, pattern=pattern.pattern, topic=topic)
                     return FilterResult(False, "тактические детали конфликта", score, topic, decision_trace)
 
         primary_passed = (
