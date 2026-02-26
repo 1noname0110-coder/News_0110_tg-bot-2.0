@@ -147,3 +147,23 @@ async def test_send_digest_messages_respects_total_limit_with_long_title_and_bod
         assert service._has_balanced_anchor_tags(payload)
 
     assert "…" in sent_texts[0].split("\n\n", maxsplit=1)[0]
+
+
+def test_has_balanced_anchor_tags_supports_llm_and_extractive_formats() -> None:
+    settings = _settings()
+    service = DigestService(settings)
+
+    llm_body = (
+        '1) [Экономика] Рост экспорта и пересмотр тарифов\n'
+        '<a href="https://example.com/1">Источник</a>'
+    )
+    extractive_body = (
+        '1) [Экономика] Обновлен макропрогноз\n'
+        'Сухая выдержка по ключевым параметрам.\n'
+        '<a href="https://example.com/1">Источник</a>'
+    )
+    broken_body = '1) [Экономика] Текст <a href="https://example.com/1">Источник'
+
+    assert service._has_balanced_anchor_tags(llm_body)
+    assert service._has_balanced_anchor_tags(extractive_body)
+    assert not service._has_balanced_anchor_tags(broken_body)

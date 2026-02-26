@@ -293,7 +293,7 @@ async def test_build_digest_with_llm_parses_items_and_metrics() -> None:
     assert digest.items_count == 5
     assert digest.quality_metrics["selected"] == 5
     assert digest.topic_breakdown
-    assert "Источник: https://example.com/1" in digest.body
+    assert '<a href="https://example.com/1">Источник</a>' in digest.body
 
 
 @pytest.mark.asyncio
@@ -388,6 +388,65 @@ async def test_build_digest_with_llm_exception_falls_back_to_extractive() -> Non
     assert '<a href="https://exception.example/1">Источник</a>' in digest.body
     assert sum(digest.topic_breakdown.values()) == digest.items_count
 
+
+
+
+def test_parse_llm_response_formats_body_like_extractive() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+    content = (
+        '{"title":"Проверка","items":['
+        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/1"},'
+        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
+        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
+        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
+        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
+        ']}'
+    )
+
+    parsed, reason = s._parse_llm_response(
+        "daily",
+        content,
+        12,
+        {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5"},
+    )
+
+    assert reason is None
+    assert parsed is not None
+    assert '<a href="https://example.com/1">Источник</a>' in parsed["body"]
+    assert "Источник: https://example.com/1" not in parsed["body"]
+
+
+def test_parse_llm_response_escapes_headline_and_url_for_html() -> None:
+    settings = _settings()
+    s = DigestSummarizer(settings)
+    content = (
+        '{"title":"Проверка","items":['
+        '{"topic":"Тема","headline":"Факт <важно> & подтверждено","url":"https://example.com/1?a=1&b=2"},'
+        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
+        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
+        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
+        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
+        ']}'
+    )
+
+    parsed, reason = s._parse_llm_response(
+        "daily",
+        content,
+        12,
+        {
+            "https://example.com/1?a=1&b=2",
+            "https://example.com/2",
+            "https://example.com/3",
+            "https://example.com/4",
+            "https://example.com/5",
+        },
+    )
+
+    assert reason is None
+    assert parsed is not None
+    assert "Факт &lt;важно&gt; &amp; подтверждено" in parsed["body"]
+    assert '<a href="https://example.com/1?a=1&amp;b=2">Источник</a>' in parsed["body"]
 
 def test_parse_llm_response_rejects_duplicate_urls() -> None:
     settings = _settings()
