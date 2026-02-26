@@ -65,6 +65,8 @@ class LlmDigestResponse(BaseModel):
 class DigestSummarizer:
     _LLM_HEADLINE_MIN_LENGTH = 15
     _LLM_HEADLINE_MAX_LENGTH = 220
+    _EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO = 0.6
+    _EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO = 0.45
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -85,8 +87,14 @@ class DigestSummarizer:
                     "accepted_before_dedup": 0,
                     "deduplicated": 0,
                     "selected": 0,
+                    "selected_base_pass": 0,
+                    "selected_fallback": 0,
+                    "selected_fallback_wave2": 0,
+                    "selected_fallback_wave3": 0,
                     "duplicates_removed": 0,
                     "removed_by_topic_limit": 0,
+                    "fallback_wave2_min_score": 0,
+                    "fallback_wave3_min_score": 0,
                 },
             )
 
@@ -110,8 +118,14 @@ class DigestSummarizer:
                         "accepted_before_dedup": len(news),
                         "deduplicated": len(news),
                         "selected": len(generated["items"]),
+                        "selected_base_pass": len(generated["items"]),
+                        "selected_fallback": 0,
+                        "selected_fallback_wave2": 0,
+                        "selected_fallback_wave3": 0,
                         "duplicates_removed": 0,
                         "removed_by_topic_limit": 0,
+                        "fallback_wave2_min_score": 0,
+                        "fallback_wave3_min_score": 0,
                     },
                 )
 
@@ -229,6 +243,14 @@ class DigestSummarizer:
         selected: list[tuple[RawNews, str]] = []
         selected_ids: set[int] = set()
         removed_by_topic_limit = 0
+        selected_in_base_pass = 0
+        selected_in_fallback_wave2 = 0
+        selected_in_fallback_wave3 = 0
+
+        max_score = ranked[0][1].score if ranked else 0
+        fallback_wave2_min_score = max(0, int(max_score * self._EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO))
+        fallback_wave3_min_score = max(0, int(max_score * self._EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO))
+
         for item, result in ranked:
             if item.id in selected_ids:
                 continue
@@ -238,6 +260,7 @@ class DigestSummarizer:
             selected.append((item, result.topic))
             selected_ids.add(item.id)
             topic_count[result.topic] += 1
+            selected_in_base_pass += 1
             if len(selected) >= cap:
                 break
 
@@ -245,11 +268,14 @@ class DigestSummarizer:
             for item, result in ranked:
                 if item.id in selected_ids:
                     continue
+                if result.score < fallback_wave2_min_score:
+                    continue
                 if topic_count[result.topic] >= per_topic_limit:
                     continue
                 selected.append((item, result.topic))
                 selected_ids.add(item.id)
                 topic_count[result.topic] += 1
+                selected_in_fallback_wave2 += 1
                 if len(selected) >= cap:
                     break
 
@@ -257,8 +283,11 @@ class DigestSummarizer:
                 for item, result in ranked:
                     if item.id in selected_ids:
                         continue
+                    if result.score < fallback_wave3_min_score:
+                        continue
                     selected.append((item, result.topic))
                     selected_ids.add(item.id)
+                    selected_in_fallback_wave3 += 1
                     if len(selected) >= min(min_items, len(ranked)):
                         break
 
@@ -286,8 +315,14 @@ class DigestSummarizer:
                 "accepted_before_dedup": len(news),
                 "deduplicated": len(deduped),
                 "selected": len(selected),
+                "selected_base_pass": selected_in_base_pass,
+                "selected_fallback": selected_in_fallback_wave2 + selected_in_fallback_wave3,
+                "selected_fallback_wave2": selected_in_fallback_wave2,
+                "selected_fallback_wave3": selected_in_fallback_wave3,
                 "duplicates_removed": max(0, len(news) - len(deduped)),
                 "removed_by_topic_limit": removed_by_topic_limit,
+                "fallback_wave2_min_score": fallback_wave2_min_score,
+                "fallback_wave3_min_score": fallback_wave3_min_score,
             },
         )
 

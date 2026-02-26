@@ -532,3 +532,63 @@ def test_parse_llm_response_rejects_url_not_from_news() -> None:
     assert parsed is None
     assert reason is not None
     assert "url not in source news" in reason
+
+
+def test_build_extractive_quality_metrics_split_base_and_fallback_waves() -> None:
+    settings = _settings()
+    settings.publish_all_important = False
+    settings.per_topic_limit_daily = 1
+    s = DigestSummarizer(settings)
+
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    items_with_scores = [
+        (RawNews(id=601, source_id=1, title="Экономика: базовый кейс", summary="Стабилизация макропоказателей", url="https://example.com/fallback/1", external_id="fb-1", published_at=base), FilterResult(True, "релевантно", 100, "economics", [])),
+        (RawNews(id=602, source_id=2, title="Политика: базовый кейс", summary="Заседание правительства", url="https://example.com/fallback/2", external_id="fb-2", published_at=base + timedelta(minutes=1)), FilterResult(True, "релевантно", 95, "politics", [])),
+        (RawNews(id=603, source_id=3, title="Экономика: корпоративные облигации", summary="Размещение длинного долга для инфраструктуры", url="https://example.com/fallback/3", external_id="fb-3", published_at=base + timedelta(minutes=2)), FilterResult(True, "релевантно", 80, "economics", [])),
+        (RawNews(id=604, source_id=4, title="Технологии: пригодно для wave2", summary="Запуск производственной платформы для чипов", url="https://example.com/fallback/4", external_id="fb-4", published_at=base + timedelta(minutes=3)), FilterResult(True, "релевантно", 62, "technology", [])),
+        (RawNews(id=605, source_id=5, title="Экономика: только wave3", summary="Отчет о занятости в экспортных кластерах", url="https://example.com/fallback/5", external_id="fb-5", published_at=base + timedelta(minutes=4)), FilterResult(True, "релевантно", 50, "economics", [])),
+        (RawNews(id=606, source_id=6, title="Экономика: только wave3", summary="Изменение налоговой базы в портах Дальнего Востока", url="https://example.com/fallback/6", external_id="fb-6", published_at=base + timedelta(minutes=5)), FilterResult(True, "релевантно", 46, "economics", [])),
+        (RawNews(id=607, source_id=7, title="Экономика: ниже порога", summary="Краткий бюллетень без подтвержденных эффектов", url="https://example.com/fallback/7", external_id="fb-7", published_at=base + timedelta(minutes=6)), FilterResult(True, "релевантно", 40, "economics", [])),
+    ]
+
+    digest = s._build_extractive(
+        "daily",
+        items_with_scores,
+        {str(i): 1 for i in range(1, 8)},
+    )
+
+    assert digest.items_count == 5
+    assert digest.quality_metrics["selected_base_pass"] == 3
+    assert digest.quality_metrics["selected_fallback_wave2"] == 0
+    assert digest.quality_metrics["selected_fallback_wave3"] == 2
+    assert digest.quality_metrics["selected_fallback"] == 2
+    assert digest.quality_metrics["fallback_wave2_min_score"] == 60
+    assert digest.quality_metrics["fallback_wave3_min_score"] == 45
+
+
+def test_build_extractive_topic_deficit_keeps_minimum_quality_floor() -> None:
+    settings = _settings()
+    settings.publish_all_important = False
+    settings.per_topic_limit_daily = 1
+    s = DigestSummarizer(settings)
+
+    base = datetime(2024, 1, 2, 10, 0, 0)
+    items_with_scores = [
+        (RawNews(id=701, source_id=1, title="Экономика: опорный материал", summary="Инвестиционные планы по портовой инфраструктуре", url="https://example.com/deficit/1", external_id="def-1", published_at=base), FilterResult(True, "релевантно", 100, "economics", [])),
+        (RawNews(id=702, source_id=2, title="Политика: опорный материал", summary="Принятие регламентов межведомственной координации", url="https://example.com/deficit/2", external_id="def-2", published_at=base + timedelta(minutes=1)), FilterResult(True, "релевантно", 94, "politics", [])),
+        (RawNews(id=703, source_id=3, title="Экономика: дополнительный сюжет", summary="Риски финансирования смежных отраслей", url="https://example.com/deficit/3", external_id="def-3", published_at=base + timedelta(minutes=2)), FilterResult(True, "релевантно", 82, "economics", [])),
+        (RawNews(id=704, source_id=4, title="Экономика: ниже минимального качества", summary="Оперативная заметка без системных последствий", url="https://example.com/deficit/4", external_id="def-4", published_at=base + timedelta(minutes=3)), FilterResult(True, "релевантно", 44, "economics", [])),
+    ]
+
+    digest = s._build_extractive(
+        "daily",
+        items_with_scores,
+        {str(i): 1 for i in range(1, 5)},
+    )
+
+    assert digest.items_count == 3
+    assert digest.quality_metrics["selected_base_pass"] == 2
+    assert digest.quality_metrics["selected_fallback"] == 1
+    assert digest.quality_metrics["selected_fallback_wave2"] == 0
+    assert digest.quality_metrics["selected_fallback_wave3"] == 1
+    assert digest.quality_metrics["fallback_wave3_min_score"] == 45
