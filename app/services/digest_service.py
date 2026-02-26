@@ -20,10 +20,11 @@ from aiogram.exceptions import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.models import RawNews
 from app.periods import get_calendar_day_bounds, get_calendar_week_bounds
 from app.repositories import NewsRepository, SourceRepository
 from app.services.collector import NewsCollector
-from app.services.filtering import NewsFilter
+from app.services.filtering import FilterResult, NewsFilter
 from app.services.summarizer import DigestSummarizer
 
 logger = logging.getLogger(__name__)
@@ -201,7 +202,7 @@ class DigestService:
 
         period_limit = self.settings.max_period_news_daily if period_type == "daily" else self.settings.max_period_news_weekly
         raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
-        accepted = []
+        accepted: list[tuple[RawNews, FilterResult]] = []
         reject_entries: list[tuple[int, int, str]] = []
         rejection_reasons = Counter()
         filter_rule_hits = Counter()
@@ -215,7 +216,7 @@ class DigestService:
                 filter_rule_score_impact[rule] += int(trace_entry.get("delta", 0))
 
             if result.accepted:
-                accepted.append(item)
+                accepted.append((item, result))
             else:
                 rejection_reasons[result.reason] += 1
                 reject_entries.append((item.id, item.source_id, result.reason))
@@ -230,7 +231,7 @@ class DigestService:
         quality_metrics["removed_by_topic_limit"] = int(digest.quality_metrics.get("removed_by_topic_limit", 0))
         quality_metrics["published_items"] = digest.items_count
         quality_metrics["raw_total"] = len(raw_items)
-        quality_metrics["accepted_total"] = len(accepted)
+        quality_metrics["accepted_total"] = int(digest.quality_metrics.get("accepted_before_dedup", len(accepted)))
         quality_metrics["rejected_total"] = len(raw_items) - len(accepted)
         quality_metrics["rejection_reasons"] = dict(rejection_reasons)
         quality_metrics["filter_rule_hits"] = dict(filter_rule_hits)
