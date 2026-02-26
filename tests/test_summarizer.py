@@ -9,6 +9,7 @@ import pytest
 
 from app.config import Settings
 from app.models import RawNews
+from app.services.filtering import FilterResult
 from app.services.summarizer import DigestSummarizer
 
 
@@ -27,6 +28,21 @@ def _settings() -> Settings:
     )
 
 
+def _with_filter_results(items: list[RawNews]) -> list[tuple[RawNews, FilterResult]]:
+    scored: list[tuple[RawNews, FilterResult]] = []
+    for idx, item in enumerate(items, start=1):
+        text = f"{item.title} {item.summary}".lower()
+        if "полит" in text or "правитель" in text or "парламент" in text:
+            topic = "politics"
+        elif "энерг" in text:
+            topic = "energy"
+        elif "технолог" in text or "it" in text:
+            topic = "technology"
+        else:
+            topic = "economics"
+        scored.append((item, FilterResult(True, "релевантно", 200 - idx, topic, [])))
+    return scored
+
 def test_extractive_deduplicates_and_balances_topics() -> None:
     settings = _settings()
     s = DigestSummarizer(settings)
@@ -39,7 +55,7 @@ def test_extractive_deduplicates_and_balances_topics() -> None:
         RawNews(id=4, source_id=3, title="На саммите ООН обсудили санкции", summary="Международные переговоры и новые ограничения", url="https://example.com/4", external_id="d", published_at=base + timedelta(minutes=3)),
     ]
 
-    digest = s._build_extractive("daily", items, {"1": 2, "2": 1, "3": 1})
+    digest = s._build_extractive("daily", _with_filter_results(items), {"1": 2, "2": 1, "3": 1})
 
     assert digest.items_count >= 3
     assert digest.quality_metrics["duplicates_removed"] >= 1
@@ -72,7 +88,7 @@ def test_deduplicate_keeps_same_titles_for_different_events() -> None:
         ),
     ]
 
-    deduped = s._deduplicate(items)
+    deduped = s._deduplicate(_with_filter_results(items))
 
     assert len(deduped) == 2
 
@@ -103,7 +119,7 @@ def test_deduplicate_merges_different_titles_with_same_url() -> None:
         ),
     ]
 
-    deduped = s._deduplicate(items)
+    deduped = s._deduplicate(_with_filter_results(items))
 
     assert len(deduped) == 1
 
@@ -147,7 +163,7 @@ def test_build_extractive_publish_all_important_allows_more_than_default_cap() -
         for i, topic in enumerate(unique_topics, start=1)
     ]
 
-    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 17)})
+    digest = s._build_extractive("daily", _with_filter_results(items), {str(i): 1 for i in range(1, 17)})
 
     assert digest.items_count > 12
     assert digest.items_count == 16
@@ -192,7 +208,7 @@ def test_build_extractive_publish_all_important_false_keeps_default_cap() -> Non
         for i, topic in enumerate(unique_topics, start=1)
     ]
 
-    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 17)})
+    digest = s._build_extractive("daily", _with_filter_results(items), {str(i): 1 for i in range(1, 17)})
 
     assert digest.items_count == 12
 
@@ -225,7 +241,7 @@ def test_build_extractive_keeps_unique_items_with_small_input() -> None:
         ),
     ]
 
-    digest = s._build_extractive("daily", items, {"1": 1, "2": 1})
+    digest = s._build_extractive("daily", _with_filter_results(items), {"1": 1, "2": 1})
 
     assert digest.items_count == 2
     assert sum(digest.topic_breakdown.values()) == 2
@@ -271,7 +287,7 @@ async def test_build_digest_with_llm_parses_items_and_metrics() -> None:
         for i in range(1, 6)
     ]
 
-    digest = await s.build_digest("daily", items)
+    digest = await s.build_digest("daily", _with_filter_results(items))
 
     assert digest.title == "Дайджест"
     assert digest.items_count == 5
@@ -319,7 +335,7 @@ async def test_build_digest_with_llm_invalid_format_falls_back_to_extractive() -
         )
     ]
 
-    digest = await s.build_digest("daily", items)
+    digest = await s.build_digest("daily", _with_filter_results(items))
 
     assert digest.items_count > 0
     assert digest.quality_metrics["selected"] == digest.items_count
@@ -365,7 +381,7 @@ async def test_build_digest_with_llm_exception_falls_back_to_extractive() -> Non
         )
     ]
 
-    digest = await s.build_digest("daily", items)
+    digest = await s.build_digest("daily", _with_filter_results(items))
 
     assert digest.items_count > 0
     assert digest.quality_metrics["selected"] == digest.items_count

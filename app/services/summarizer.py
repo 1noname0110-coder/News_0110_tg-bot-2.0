@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError, field_vali
 
 from app.config import Settings
 from app.models import RawNews
-from app.services.filtering import NewsFilter
+from app.services.filtering import FilterResult
 
 
 logger = logging.getLogger(__name__)
@@ -68,12 +68,11 @@ class DigestSummarizer:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.filter = NewsFilter()
         self.client = None
         if settings.llm_enabled and settings.llm_api_key:
             self.client = AsyncOpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
 
-    async def build_digest(self, period_type: str, news: list[RawNews]) -> DigestOutput:
+    async def build_digest(self, period_type: str, news: list[tuple[RawNews, FilterResult]]) -> DigestOutput:
         if not news:
             title = "Сводка: значимых событий не выявлено"
             return DigestOutput(
@@ -91,7 +90,7 @@ class DigestSummarizer:
                 },
             )
 
-        source_breakdown = Counter(str(n.source_id) for n in news)
+        source_breakdown = Counter(str(item.source_id) for item, _result in news)
 
         if self.client:
             generated: dict[str, Any] | None = None
@@ -120,10 +119,10 @@ class DigestSummarizer:
 
         return self._build_extractive(period_type, news, dict(source_breakdown))
 
-    async def _build_with_llm(self, period_type: str, news: list[RawNews]) -> dict[str, Any] | None:
+    async def _build_with_llm(self, period_type: str, news: list[tuple[RawNews, FilterResult]]) -> dict[str, Any] | None:
         limit = 15 if period_type == "weekly" else 12
         prompt_items = "\n".join(
-            [f"- {n.title}. {n.summary[:350]} (источник {n.source_id})" for n in news[:80]]
+            [f"- {item.title}. {item.summary[:350]} (источник {item.source_id})" for item, _result in news[:80]]
         )
         system = (
             "Ты редактор сухой аналитической сводки. Пиши только факты, без эмоций, пропаганды и кликбейта. "
@@ -192,7 +191,12 @@ class DigestSummarizer:
             "topic_breakdown": dict(topic_breakdown),
         }, None
 
-    def _build_extractive(self, period_type: str, news: list[RawNews], source_breakdown: dict[str, int]) -> DigestOutput:
+    def _build_extractive(
+        self,
+        period_type: str,
+        news: list[tuple[RawNews, FilterResult]],
+        source_breakdown: dict[str, int],
+    ) -> DigestOutput:
         default_cap = 12 if period_type == "daily" else 15
         min_items = 5 if period_type == "daily" else 7
         publish_all_important = self.settings.publish_all_important
@@ -200,9 +204,8 @@ class DigestSummarizer:
 
         deduped = self._deduplicate(news)
 
-        scored_items = [(n, self.filter.evaluate(n.title, n.summary)) for n in deduped]
         ranked = sorted(
-            scored_items,
+            deduped,
             key=lambda item: (item[1].score, len(item[0].summary), item[0].published_at),
             reverse=True,
         )
@@ -276,22 +279,24 @@ class DigestSummarizer:
             },
         )
 
-    def _deduplicate(self, news: list[RawNews]) -> list[RawNews]:
-        selected: list[RawNews] = []
+    def _deduplicate(self, news: list[tuple[RawNews, FilterResult]]) -> list[tuple[RawNews, FilterResult]]:
+        selected: list[tuple[RawNews, FilterResult]] = []
         summary_prefix_len = 180
-        for candidate in sorted(news, key=lambda n: (n.published_at, len(n.summary)), reverse=True):
-            candidate_key = self._dedup_similarity_key(candidate, summary_prefix_len)
+        for candidate in sorted(news, key=lambda n: (n[0].published_at, len(n[0].summary)), reverse=True):
+            candidate_item = candidate[0]
+            candidate_key = self._dedup_similarity_key(candidate_item, summary_prefix_len)
             duplicate = False
             for existing in selected:
-                if self._is_exact_duplicate(candidate, existing):
+                existing_item = existing[0]
+                if self._is_exact_duplicate(candidate_item, existing_item):
                     duplicate = True
                     break
 
-                threshold = self._dedup_threshold(candidate, existing)
+                threshold = self._dedup_threshold(candidate_item, existing_item)
                 ratio = SequenceMatcher(
                     None,
                     candidate_key,
-                    self._dedup_similarity_key(existing, summary_prefix_len),
+                    self._dedup_similarity_key(existing_item, summary_prefix_len),
                 ).ratio()
                 if ratio >= threshold:
                     duplicate = True
