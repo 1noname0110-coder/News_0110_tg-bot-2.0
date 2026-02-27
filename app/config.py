@@ -36,10 +36,10 @@ class Settings(BaseSettings):
         alias="DEDUP_SIMILARITY_THRESHOLD_SAME_SOURCE",
     )
     dedup_similarity_threshold_cross_source: float | None = Field(
-        default=None,
+        default=0.90,
         alias="DEDUP_SIMILARITY_THRESHOLD_CROSS_SOURCE",
     )
-    per_topic_limit_daily: int = Field(default=3, alias="PER_TOPIC_LIMIT_DAILY")
+    per_topic_limit_daily: int = Field(default=4, alias="PER_TOPIC_LIMIT_DAILY")
     per_topic_limit_weekly: int = Field(default=4, alias="PER_TOPIC_LIMIT_WEEKLY")
     publish_all_important: bool = Field(default=True, alias="PUBLISH_ALL_IMPORTANT")
     max_period_news_daily: int = Field(default=350, alias="MAX_PERIOD_NEWS_DAILY")
