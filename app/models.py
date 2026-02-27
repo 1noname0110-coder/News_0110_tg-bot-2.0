@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -38,7 +38,13 @@ class RawNews(Base):
 
 class PublishedNews(Base):
     __tablename__ = "published_news"
-    __table_args__ = (Index("ix_published_news_period", "period_type", "period_start", "period_end"),)
+    __table_args__ = (
+        Index("ix_published_news_period", "period_type", "period_start", "period_end"),
+        CheckConstraint(
+            "status IN ('prepared', 'sending', 'sent', 'partial', 'failed')",
+            name="ck_published_news_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     period_type: Mapped[str] = mapped_column(String(16), nullable=False)  # daily, weekly
