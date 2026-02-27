@@ -3,6 +3,7 @@ import re
 import pytest
 
 from app.services.filtering import NewsFilter
+from app.services.pipeline import attach_filter_result, get_attached_filter_result
 
 
 def _legacy_evaluate(f: NewsFilter, title: str, summary: str, source_trust: float = 1.0) -> tuple[bool, str, int, str, list[str]]:
@@ -197,3 +198,29 @@ def test_rejects_unsafe_regex_pattern(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValueError, match="Unsafe regex pattern"):
         NewsFilter()
+
+
+def test_attached_filter_snapshot_matches_evaluation() -> None:
+    f = NewsFilter("balanced")
+    title = "Правительство утвердило налоговые изменения"
+    summary = "Новые правила влияют на экспорт и бюджет на следующий год."
+
+    result = f.evaluate(title, summary)
+
+    class _Raw:
+        pass
+
+    raw = _Raw()
+    snapshot = attach_filter_result(raw, result)
+
+    assert snapshot.score == result.score
+    assert snapshot.topic == result.topic
+    assert snapshot.reason == result.reason
+    assert snapshot.decision_trace == result.decision_trace
+
+    attached = get_attached_filter_result(raw)
+    assert attached is not None
+    assert attached.score == result.score
+    assert attached.topic == result.topic
+    assert attached.reason == result.reason
+    assert attached.decision_trace == result.decision_trace

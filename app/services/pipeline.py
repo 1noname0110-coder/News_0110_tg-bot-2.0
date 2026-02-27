@@ -7,6 +7,35 @@ from app.models import RawNews
 from app.services.filtering import FilterResult
 
 
+FILTER_RESULT_ATTR = "_filter_result_snapshot"
+
+
+@dataclass(slots=True)
+class FilterResultSnapshot:
+    score: int
+    topic: str
+    reason: str
+    decision_trace: list[dict[str, object]]
+
+
+def attach_filter_result(raw: RawNews, result: FilterResult) -> FilterResultSnapshot:
+    snapshot = FilterResultSnapshot(
+        score=result.score,
+        topic=result.topic,
+        reason=result.reason,
+        decision_trace=list(result.decision_trace),
+    )
+    setattr(raw, FILTER_RESULT_ATTR, snapshot)
+    return snapshot
+
+
+def get_attached_filter_result(raw: RawNews) -> FilterResultSnapshot | None:
+    value = getattr(raw, FILTER_RESULT_ATTR, None)
+    if isinstance(value, FilterResultSnapshot):
+        return value
+    return None
+
+
 @dataclass(slots=True)
 class RankedNewsItem:
     raw: RawNews
@@ -28,6 +57,7 @@ class RankedNewsItem:
         result: FilterResult,
         normalize_text: Callable[[str], str],
     ) -> "RankedNewsItem":
+        attach_filter_result(raw, result)
         return cls(
             raw=raw,
             score=result.score,

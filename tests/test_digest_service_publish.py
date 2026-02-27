@@ -15,6 +15,7 @@ from app.db import Base
 from app.models import DeliveryAttempt, PublishedNews, RawNews, RejectedNews
 from app.repositories import NewsRepository
 from app.services.digest_service import DigestService
+from app.services.pipeline import get_attached_filter_result
 
 
 def _settings() -> Settings:
@@ -440,5 +441,108 @@ async def test_redeliver_digest_skips_already_delivered_chunks() -> None:
         assert second_result["skipped_chunks"] == [1, 2]
         assert second_result["sent_chunks"] == 2
         assert len([a for a in attempts if a.status == "success" and a.chunk_idx == 1]) == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_publish_period_uses_single_filter_pass_for_selection_and_metrics() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with Session() as session:
+        session.add_all(
+            [
+                RawNews(
+                    source_id=1,
+                    title="accepted",
+                    summary="s",
+                    url="https://example.com/a",
+                    external_id="a",
+                    published_at=datetime(2026, 1, 1, 10, 0, 0),
+                ),
+                RawNews(
+                    source_id=1,
+                    title="rejected",
+                    summary="s",
+                    url="https://example.com/b",
+                    external_id="b",
+                    published_at=datetime(2026, 1, 1, 11, 0, 0),
+                ),
+            ]
+        )
+        await session.commit()
+
+        service = DigestService(_settings())
+        evaluate_calls: list[str] = []
+
+        def _fake_evaluate(title, _summary, **_kwargs):  # noqa: ANN001
+            evaluate_calls.append(title)
+            if title == "accepted":
+                return SimpleNamespace(
+                    accepted=True,
+                    reason="релевантно",
+                    is_high_confidence=True,
+                    score=9,
+                    topic="politics",
+                    decision_trace=[{"rule": "topic_match", "delta": 2}, {"rule": "publishable", "delta": 0}],
+                )
+            return SimpleNamespace(
+                accepted=False,
+                reason="noise",
+                is_high_confidence=False,
+                score=-1,
+                topic="other",
+                decision_trace=[{"rule": "low_priority", "delta": -4}, {"rule": "below_floor", "delta": 0}],
+            )
+
+        service.filter.evaluate = _fake_evaluate
+
+        captured_ranked = {}
+
+        async def _fake_build_digest(_period, ranked_items):  # noqa: ANN001
+            captured_ranked["items"] = ranked_items
+            return SimpleNamespace(
+                title="digest",
+                body="body",
+                items_count=len(ranked_items),
+                source_breakdown={"1": len(ranked_items)},
+                topic_breakdown={"politics": len(ranked_items)},
+                quality_metrics={"accepted_before_dedup": len(ranked_items)},
+            )
+
+        async def _fake_send_digest_messages(_bot, _title, _body, **_kwargs):  # noqa: ANN001
+            return {"status": "success", "total_chunks": 1, "sent_chunks": 1, "failed_chunks": []}
+
+        service.summarizer.build_digest = _fake_build_digest
+        service._send_digest_messages = _fake_send_digest_messages
+
+        start_dt = datetime(2026, 1, 1, 0, 0, 0)
+        end_dt = datetime(2026, 1, 2, 0, 0, 0)
+        await service._publish_period(bot=object(), session=session, period_type="daily", start_dt=start_dt, end_dt=end_dt)
+
+        assert evaluate_calls == ["rejected", "accepted"]
+        ranked_items = captured_ranked["items"]
+        assert len(ranked_items) == 1
+        assert ranked_items[0].raw.title == "accepted"
+        assert ranked_items[0].score == 9
+        assert ranked_items[0].topic == "politics"
+
+        attached = get_attached_filter_result(ranked_items[0].raw)
+        assert attached is not None
+        assert attached.score == 9
+        assert attached.topic == "politics"
+        assert attached.reason == "релевантно"
+
+        published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
+        assert len(published) == 1
+        metrics = published[0].quality_metrics
+        assert metrics["fetched_from_db"] == 2
+        assert metrics["accepted_total"] == 1
+        assert metrics["rejected_total"] == 1
+        assert metrics["rejection_reasons"] == {"noise": 1}
 
     await engine.dispose()

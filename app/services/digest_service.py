@@ -25,7 +25,7 @@ from app.periods import get_calendar_day_bounds, get_calendar_week_bounds
 from app.repositories import DigestDeliveryStatus, NewsRepository, SourceRepository, source_trust_coefficient
 from app.services.collector import NewsCollector
 from app.services.filtering import FilterResult, NewsFilter
-from app.services.pipeline import RankedNewsItem
+from app.services.pipeline import RankedNewsItem, attach_filter_result
 from app.services.summarizer import DigestSummarizer
 
 logger = logging.getLogger(__name__)
@@ -237,6 +237,7 @@ class DigestService:
             source = source_map.get(item.source_id)
             source_trust = source_trust_coefficient(getattr(source, "meta", {}))
             result = self.filter.evaluate(item.title, item.summary, source_trust=source_trust)
+            attach_filter_result(item, result)
             for trace_entry in getattr(result, "decision_trace", []):
                 rule = str(trace_entry.get("rule", "unknown"))
                 filter_rule_hits[rule] += 1
