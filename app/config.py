@@ -20,21 +20,21 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite+aiosqlite:///./news_bot.db", alias="DATABASE_URL")
     timezone: str = Field(default="Asia/Vladivostok", alias="TIMEZONE")
 
-    daily_publish_hour: int = Field(default=21, alias="DAILY_PUBLISH_HOUR")
-    weekly_publish_hour: int = Field(default=21, alias="WEEKLY_PUBLISH_HOUR")
+    daily_publish_hour: int = Field(default=21, ge=0, le=23, alias="DAILY_PUBLISH_HOUR")
+    weekly_publish_hour: int = Field(default=21, ge=0, le=23, alias="WEEKLY_PUBLISH_HOUR")
 
     llm_enabled: bool = Field(default=False, alias="LLM_ENABLED")
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
     llm_model: str = Field(default="gpt-4o-mini", alias="LLM_MODEL")
     llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
 
-    min_publish_score: int = Field(default=2, alias="MIN_PUBLISH_SCORE")
-    high_confidence_min_count_daily: int = Field(default=5, alias="HIGH_CONFIDENCE_MIN_COUNT_DAILY")
-    high_confidence_min_count_weekly: int = Field(default=7, alias="HIGH_CONFIDENCE_MIN_COUNT_WEEKLY")
-    dedup_threshold_same_source: float = Field(default=0.84, alias="DEDUP_THRESHOLD_SAME_SOURCE")
-    dedup_threshold_cross_source: float = Field(default=0.92, alias="DEDUP_THRESHOLD_CROSS_SOURCE")
-    per_topic_limit: int = Field(default=4, alias="PER_TOPIC_LIMIT")
-    max_period_news: int = Field(default=500, alias="MAX_PERIOD_NEWS")
+    min_publish_score: int = Field(default=2, ge=0, alias="MIN_PUBLISH_SCORE")
+    high_confidence_min_count_daily: int = Field(default=5, ge=1, alias="HIGH_CONFIDENCE_MIN_COUNT_DAILY")
+    high_confidence_min_count_weekly: int = Field(default=7, ge=1, alias="HIGH_CONFIDENCE_MIN_COUNT_WEEKLY")
+    dedup_threshold_same_source: float = Field(default=0.84, ge=0.0, le=1.0, alias="DEDUP_THRESHOLD_SAME_SOURCE")
+    dedup_threshold_cross_source: float = Field(default=0.92, ge=0.0, le=1.0, alias="DEDUP_THRESHOLD_CROSS_SOURCE")
+    per_topic_limit: int = Field(default=4, ge=1, alias="PER_TOPIC_LIMIT")
+    max_period_news: int = Field(default=500, ge=1, le=5000, alias="MAX_PERIOD_NEWS")
 
     @model_validator(mode="before")
     @classmethod

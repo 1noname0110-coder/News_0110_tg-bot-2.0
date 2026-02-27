@@ -61,14 +61,14 @@ cp .env.example .env
 
 ## Важные переменные `.env`
 
-> Обязательные переменные для старта: `BOT_TOKEN`, `CHANNEL_ID` (или `CHAT_ID` / `TELEGRAM_CHANNEL_ID`) и `ADMIN_USER_IDS`.
+> Обязательные переменные для старта: `BOT_TOKEN`, `CHANNEL_ID` (или `CHAT_ID` / `TELEGRAM_CHANNEL_ID`), `ADMIN_USER_IDS`, `DATABASE_URL`.
 > Если `CHANNEL_ID` или `ADMIN_USER_IDS` отсутствуют или пустые, приложение завершит запуск с ошибкой валидации конфигурации.
 
 - `BOT_TOKEN` — токен бота.
 - `CHANNEL_ID` — id канала (`@channel_name` или числовой id).
   - также поддержаны `CHAT_ID` и `TELEGRAM_CHANNEL_ID` как альтернативные имена переменной.
 - `ADMIN_USER_IDS` — **обязательный** список Telegram user id админов через запятую (только числа), например: `123456789,987654321`.
-- `DATABASE_URL`:
+- `DATABASE_URL` — **обязательный** DSN БД:
   - SQLite: `sqlite+aiosqlite:///./news_bot.db`
   - PostgreSQL: `postgresql+asyncpg://user:pass@host:5432/dbname`
 - `MIN_PUBLISH_SCORE` — минимальный скор для публикации в fallback-волнах отбора.
@@ -130,7 +130,6 @@ python -m app.main
 
 Это устраняет ошибку `ModuleNotFoundError: No module named app`, которая возникает при запуске файла напрямую как `/app/app/main.py` на некоторых хостингах.
 
-Если в панели хостинга случайно указали ID канала как имя переменной (например, ключ `-100...`), бот теперь автоматически распознает это и подставит как `CHANNEL_ID`.
 
 ## Границы периодов
 
@@ -141,6 +140,22 @@ python -m app.main
   - `weekly`: `week_start = понедельник 00:00 local`, `week_end = week_start + 7 days`.
 - Благодаря фиксированным `start/end` антидубль (`is_period_already_published`) получает одинаковые границы для одного календарного периода и не допускает повторной production-публикации.
 - Режим «по текущий момент» вынесен отдельно: preview-методы используют `now_local` как верхнюю границу и не предназначены для production cron-публикаций.
+
+## Pipeline публикации и инварианты
+
+1. **Collect**: активные источники (`rss/site/api`) собираются конкурентно и сохраняются в `raw_news`.
+2. **Filter + rank**: новости проходят rule-based фильтрацию, получают тему, score и признаки high-confidence.
+3. **Summarize**:
+   - при включённом LLM — модель возвращает строгий JSON, который валидируется и рендерится в тот же HTML-шаблон;
+   - при ошибке LLM — fallback на extractive summarizer с dedup и topic balancing.
+4. **Publish**: итоговый текст автоматически режется на Telegram-чанки без нарушения HTML `<a>`-тегов.
+
+Инварианты публикации:
+
+- Формат пункта единый для LLM и extractive режимов: `N) [Тема] Заголовок` + (опционально сниппет) + `<a href="...">Источник</a>`.
+- Периоды всегда считаются как полуинтервал `[start, end)`.
+- Production-публикация не дублируется для одного и того же календарного периода.
+- Каждый отправляемый чанк валиден по лимиту Telegram и не содержит «оборванных» HTML-ссылок.
 
 ## Планировщик
 

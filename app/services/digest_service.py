@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 
 class DigestService:
     TELEGRAM_MESSAGE_MAX = 4096
+    TELEGRAM_MAX_CHARS = TELEGRAM_MESSAGE_MAX  # legacy alias
     DIGEST_TITLE_MAX_CHARS = 500
     CHUNK_HEADER_SEPARATOR = "\n\n"
-    MIN_CHUNK_BODY_CHARS = 1
     SEND_RETRY_ATTEMPTS = 4
     SEND_RETRY_DELAY_SECONDS = 2
     COLLECT_MAX_CONCURRENCY = 8
@@ -338,7 +338,7 @@ class DigestService:
                 logger.info("Дайджест: пропуск уже доставленного чанка %s/%s", idx, total)
                 continue
             header = self._build_chunk_header(safe_title, idx, total)
-            budget = self.TELEGRAM_MESSAGE_MAX - len(header)
+            budget = self._message_body_budget(header)
             if len(chunk) > budget:
                 chunk = self._fit_chunk_to_budget(chunk, budget)
 
@@ -496,7 +496,7 @@ class DigestService:
         }
 
     def _split_body(self, body: str) -> list[str]:
-        chunk_limit = self.TELEGRAM_MESSAGE_MAX
+        chunk_limit = self._message_limit
         if len(body) <= chunk_limit:
             return [body]
 
@@ -542,7 +542,7 @@ class DigestService:
         return blocks or [body]
 
     def _split_oversized_block(self, block: str) -> list[str]:
-        chunk_limit = self.TELEGRAM_MESSAGE_MAX
+        chunk_limit = self._message_limit
         parts: list[str] = []
         current = ""
 
@@ -586,14 +586,18 @@ class DigestService:
 
     def _build_chunk_header(self, title: str, idx: int, total: int) -> str:
         suffix = "" if idx == 1 else f" (продолжение {idx}/{total})"
-        max_header_text_len = (
-            self.TELEGRAM_MESSAGE_MAX
-            - len(self.CHUNK_HEADER_SEPARATOR)
-            - self.MIN_CHUNK_BODY_CHARS
-        )
+        max_header_text_len = self._message_limit - len(self.CHUNK_HEADER_SEPARATOR) - 1
         allowed_title_len = max(1, max_header_text_len - len(suffix))
         safe_title = self._truncate_text(title, allowed_title_len)
         return f"{safe_title}{suffix}{self.CHUNK_HEADER_SEPARATOR}"
+
+    @property
+    def _message_limit(self) -> int:
+        legacy_limit = getattr(self, "TELEGRAM_MAX_CHARS", self.TELEGRAM_MESSAGE_MAX)
+        return int(legacy_limit)
+
+    def _message_body_budget(self, header: str) -> int:
+        return max(0, self._message_limit - len(header))
 
     def _fit_chunk_to_budget(self, chunk: str, budget: int) -> str:
         if budget <= 0:
