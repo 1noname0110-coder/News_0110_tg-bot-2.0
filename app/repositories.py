@@ -386,6 +386,14 @@ class NewsRepository:
     async def get_published_digest(self, digest_id: int) -> PublishedNews | None:
         return await self.session.get(PublishedNews, digest_id)
 
+    async def get_successfully_delivered_chunks(self, digest_id: int) -> set[int]:
+        result = await self.session.execute(
+            select(DeliveryAttempt.chunk_idx).where(
+                and_(DeliveryAttempt.digest_id == digest_id, DeliveryAttempt.status == "success")
+            )
+        )
+        return set(result.scalars().all())
+
     async def get_recent_delivery_failures(self, limit: int = 5) -> list[DeliveryAttempt]:
         result = await self.session.execute(
             select(DeliveryAttempt)
@@ -458,7 +466,7 @@ class NewsRepository:
         rows = list((await self.session.execute(query)).scalars().all())
         for row in rows:
             status = str((row.quality_metrics or {}).get("delivery_status", ""))
-            if status == "published":
+            if status == "sent":
                 return True
         return False
 

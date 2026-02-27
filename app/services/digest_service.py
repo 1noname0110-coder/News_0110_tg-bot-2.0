@@ -138,7 +138,16 @@ class DigestService:
         digest = await news_repo.get_published_digest(digest_id)
         if digest is None:
             return {"status": "not_found", "total_chunks": 0, "sent_chunks": 0, "failed_chunks": []}
-        return await self._send_digest_messages(bot, digest.title, digest.body, news_repo=news_repo, digest_id=digest_id)
+
+        sent_chunks = await news_repo.get_successfully_delivered_chunks(digest_id)
+        return await self._send_digest_messages(
+            bot,
+            digest.title,
+            digest.body,
+            news_repo=news_repo,
+            digest_id=digest_id,
+            skip_chunk_indexes=sent_chunks,
+        )
 
     async def publish_weekly(self, bot: Bot, session: AsyncSession) -> None:
         tz = ZoneInfo(self.settings.timezone)
@@ -290,10 +299,13 @@ class DigestService:
             digest_id=prepared.id,
         )
         quality_metrics["delivery"] = send_result
-        quality_metrics["delivery_status"] = "published" if send_result.get("status") == "success" else "partial"
+        delivery_status = str(send_result.get("status", "failed"))
+        if delivery_status == "success":
+            delivery_status = "sent"
+        quality_metrics["delivery_status"] = delivery_status
         await news_repo.update_digest_delivery(
             prepared.id,
-            delivery_status=quality_metrics["delivery_status"],
+            delivery_status=delivery_status,
             delivery_payload=send_result,
         )
 
@@ -305,14 +317,22 @@ class DigestService:
         *,
         news_repo: NewsRepository,
         digest_id: int | None,
+        skip_chunk_indexes: set[int] | None = None,
     ) -> dict[str, int | str | list[int]]:
         chunks = self._split_body(body)
         total = len(chunks)
         sent_chunks = 0
         failed_chunks: list[int] = []
+        skipped_chunks: list[int] = []
+        already_sent = set(skip_chunk_indexes or set())
         safe_title = self._truncate_text(title.strip(), self.DIGEST_TITLE_MAX_CHARS)
 
         for idx, chunk in enumerate(chunks, 1):
+            if idx in already_sent:
+                skipped_chunks.append(idx)
+                sent_chunks += 1
+                logger.info("Дайджест: пропуск уже доставленного чанка %s/%s", idx, total)
+                continue
             header = self._build_chunk_header(safe_title, idx, total)
             budget = self.TELEGRAM_MESSAGE_MAX - len(header)
             if len(chunk) > budget:
@@ -328,6 +348,12 @@ class DigestService:
             )
 
             for attempt in range(1, self.SEND_RETRY_ATTEMPTS + 1):
+                await news_repo.add_delivery_attempt(
+                    digest_id=digest_id,
+                    chunk_idx=idx,
+                    status="attempt",
+                )
+                logger.info("Дайджест: попытка отправки чанка %s/%s (попытка %s/%s)", idx, total, attempt, self.SEND_RETRY_ATTEMPTS)
                 try:
                     await bot.send_message(chat_id=self.settings.channel_id, text=header + chunk)
                     await news_repo.add_delivery_attempt(
@@ -442,7 +468,12 @@ class DigestService:
             if not sent:
                 failed_chunks.append(idx)
 
-        status = "success" if sent_chunks == total else "partial"
+        if sent_chunks == total:
+            status = "sent"
+        elif sent_chunks > 0:
+            status = "partial"
+        else:
+            status = "failed"
         logger.info(
             "Дайджест: отправка завершена, статус=%s, отправлено %s/%s, ошибки в чанках=%s",
             status,
@@ -455,6 +486,7 @@ class DigestService:
             "total_chunks": total,
             "sent_chunks": sent_chunks,
             "failed_chunks": failed_chunks,
+            "skipped_chunks": skipped_chunks,
         }
 
     def _split_body(self, body: str) -> list[str]:
