@@ -27,7 +27,7 @@ class NewsCollector:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.settings.fetch_timeout_seconds)
+            self._client = httpx.AsyncClient(timeout=20)
         return self._client
 
     async def aclose(self) -> None:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from app.models import RawNews
+from app.services.filtering import FilterResult
 
 
 @dataclass(slots=True)
@@ -17,3 +19,24 @@ class RankedNewsItem:
     publish_priority: int = 0
     dedup_exact_key: str = ""
     dedup_similarity_key: str = ""
+
+    @classmethod
+    def from_filter_result(
+        cls,
+        *,
+        raw: RawNews,
+        result: FilterResult,
+        normalize_text: Callable[[str], str],
+    ) -> "RankedNewsItem":
+        return cls(
+            raw=raw,
+            score=result.score,
+            topic=result.topic,
+            accepted=result.accepted,
+            reason=result.reason,
+            decision_trace=result.decision_trace,
+            is_high_confidence=result.is_high_confidence,
+            publish_priority=2 if result.is_high_confidence else 1,
+            dedup_exact_key=f"{raw.source_id}:{raw.external_id or ''}:{raw.url or ''}",
+            dedup_similarity_key=normalize_text(f"{raw.title} {raw.summary[:180]}"),
+        )

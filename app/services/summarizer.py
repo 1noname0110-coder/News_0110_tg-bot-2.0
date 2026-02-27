@@ -64,6 +64,8 @@ class LlmDigestResponse(BaseModel):
 class DigestSummarizer:
     _LLM_HEADLINE_MIN_LENGTH = 15
     _LLM_HEADLINE_MAX_LENGTH = 220
+    _DIGEST_LIMITS = {"daily": 12, "weekly": 15}
+    _DIGEST_MIN_ITEMS = {"daily": 5, "weekly": 7}
     _EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO = 0.6
     _EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO = 0.45
 
@@ -133,7 +135,7 @@ class DigestSummarizer:
         return self._build_extractive(period_type, news, dict(source_breakdown))
 
     async def _build_with_llm(self, period_type: str, news: list[RankedNewsItem]) -> dict[str, Any] | None:
-        limit = 15 if period_type == "weekly" else 12
+        limit = self._DIGEST_LIMITS.get(period_type, self._DIGEST_LIMITS["daily"])
         prompt_items = "\n".join(
             [f"- {entry.raw.title}. {entry.raw.summary[:350]} (источник {entry.raw.source_id})" for entry in news[:80]]
         )
@@ -203,10 +205,7 @@ class DigestSummarizer:
             seen_urls.add(source_url)
 
             topic_breakdown[self._normalize(topic)] += 1
-            safe_topic = html.escape(topic)
-            safe_headline = html.escape(headline)
-            safe_url = html.escape(source_url, quote=True)
-            lines.append(f"{item_number}) [{safe_topic}] {safe_headline}\n<a href=\"{safe_url}\">Источник</a>")
+            lines.append(self._render_digest_item(item_number, topic=topic, headline=headline, source_url=source_url))
             items.append({"number": item_number, "topic": topic, "headline": headline, "source_url": source_url})
 
         return {
@@ -222,8 +221,8 @@ class DigestSummarizer:
         news: list[RankedNewsItem],
         source_breakdown: dict[str, int],
     ) -> DigestOutput:
-        default_cap = 12 if period_type == "daily" else 15
-        min_items = 5 if period_type == "daily" else 7
+        default_cap = self._DIGEST_LIMITS.get(period_type, self._DIGEST_LIMITS["daily"])
+        min_items = self._DIGEST_MIN_ITEMS.get(period_type, self._DIGEST_MIN_ITEMS["daily"])
         per_topic_limit = self.settings.per_topic_limit
 
         deduped = self._deduplicate(news)
@@ -301,11 +300,14 @@ class DigestSummarizer:
             item = entry.raw
             topic_breakdown[entry.topic] += 1
             snippet = self._make_dry_snippet(item.summary)
-            safe_title = html.escape(item.title)
-            safe_snippet = html.escape(snippet)
-            safe_url = html.escape(item.url, quote=True)
             lines.append(
-                f"{idx}) [{self._topic_ru(entry.topic)}] {safe_title}\n{safe_snippet}\n<a href=\"{safe_url}\">Источник</a>"
+                self._render_digest_item(
+                    idx,
+                    topic=self._topic_ru(entry.topic),
+                    headline=item.title,
+                    source_url=item.url,
+                    snippet=snippet,
+                )
             )
 
         return DigestOutput(
@@ -350,6 +352,28 @@ class DigestSummarizer:
                 selected.append(candidate)
         return selected
 
+
+    @staticmethod
+    def _render_digest_item(
+        item_number: int,
+        *,
+        topic: str,
+        headline: str,
+        source_url: str,
+        snippet: str | None = None,
+    ) -> str:
+        safe_topic = html.escape(topic)
+        safe_headline = html.escape(headline)
+        safe_url = html.escape(source_url, quote=True)
+        lines = [f"{item_number}) [{safe_topic}] {safe_headline}"]
+        if snippet:
+            lines.append(html.escape(snippet))
+        lines.append(f'<a href="{safe_url}">Источник</a>')
+        return "\n".join(lines)
+
+    @classmethod
+    def normalize_text(cls, text: str) -> str:
+        return cls._normalize(text)
     @staticmethod
     def _domain_path(url: str) -> str:
         parsed = urlparse(url)
