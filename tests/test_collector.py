@@ -13,7 +13,7 @@ from app.services.collector import NewsCollector
 
 
 def _settings() -> Settings:
-    return Settings.model_validate({"BOT_TOKEN": "token", "CHANNEL_ID": "-1001234567890"})
+    return Settings.model_validate({"BOT_TOKEN": "token", "CHANNEL_ID": "-1001234567890", "ADMIN_USER_IDS": "1"})
 
 
 def _source() -> Source:

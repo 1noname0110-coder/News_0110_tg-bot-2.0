@@ -87,20 +87,9 @@ def test_rejects_non_numeric_admin_ids() -> None:
         )
 
 
-def test_filter_profile_defaults_to_balanced() -> None:
+def test_quality_related_defaults_are_present() -> None:
     settings = Settings.model_validate(
         {"BOT_TOKEN": "token", "CHANNEL_ID": "-1001234567890", "ADMIN_USER_IDS": "12345"}
     )
-    assert settings.filter_threshold_profile == "balanced"
-
-
-def test_accepts_custom_filter_profile() -> None:
-    settings = Settings.model_validate(
-        {
-            "BOT_TOKEN": "token",
-            "CHANNEL_ID": "-1001234567890",
-            "ADMIN_USER_IDS": "12345",
-            "FILTER_THRESHOLD_PROFILE": "strict",
-        }
-    )
-    assert settings.filter_threshold_profile == "strict"
+    assert settings.min_publish_score == 2
+    assert settings.per_topic_limit == 4

@@ -43,7 +43,7 @@ class DigestService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.collector = NewsCollector(settings)
-        self.filter = NewsFilter(settings.filter_threshold_profile)
+        self.filter = NewsFilter("balanced")
         self.summarizer = DigestSummarizer(settings)
 
     async def aclose(self) -> None:
@@ -242,20 +242,11 @@ class DigestService:
                     suspicious_rejections += 1
                 continue
 
-            dedup_exact_key = f"{item.source_id}:{item.external_id or ''}:{item.url or ''}"
-            similarity_key = self.summarizer._normalize(f"{item.title} {item.summary[:180]}")
             ranked_items.append(
-                RankedNewsItem(
+                RankedNewsItem.from_filter_result(
                     raw=item,
-                    score=result.score,
-                    topic=result.topic,
-                    accepted=result.accepted,
-                    reason=result.reason,
-                    decision_trace=result.decision_trace,
-                    is_high_confidence=result.is_high_confidence,
-                    publish_priority=2 if result.is_high_confidence else 1,
-                    dedup_exact_key=dedup_exact_key,
-                    dedup_similarity_key=similarity_key,
+                    result=result,
+                    normalize_text=self.summarizer.normalize_text,
                 )
             )
 

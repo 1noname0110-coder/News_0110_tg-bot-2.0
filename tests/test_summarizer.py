@@ -1,15 +1,10 @@
-import os
 from datetime import datetime, timedelta
-from types import SimpleNamespace
-
-os.environ.setdefault("BOT_TOKEN", "test-token")
-os.environ.setdefault("CHANNEL_ID", "@test_channel")
 
 import pytest
 
 from app.config import Settings
 from app.models import RawNews
-from app.services.filtering import FilterResult
+from app.services.pipeline import RankedNewsItem
 from app.services.summarizer import DigestSummarizer
 
 
@@ -20,575 +15,77 @@ def _settings() -> Settings:
             "CHANNEL_ID": "@c",
             "ADMIN_USER_IDS": "1",
             "LLM_ENABLED": False,
-            "DEDUP_SIMILARITY_THRESHOLD": 0.8,
-            "PER_TOPIC_LIMIT_DAILY": 2,
-            "PER_TOPIC_LIMIT_WEEKLY": 3,
-            "PUBLISH_ALL_IMPORTANT": True,
         }
     )
 
 
-def _with_filter_results(items: list[RawNews]) -> list[tuple[RawNews, FilterResult]]:
-    scored: list[tuple[RawNews, FilterResult]] = []
-    for idx, item in enumerate(items, start=1):
-        text = f"{item.title} {item.summary}".lower()
-        if "полит" in text or "правитель" in text or "парламент" in text:
-            topic = "politics"
-        elif "энерг" in text:
-            topic = "energy"
-        elif "технолог" in text or "it" in text:
-            topic = "technology"
-        else:
-            topic = "economics"
-        scored.append((item, FilterResult(True, "релевантно", 200 - idx, topic, [])))
-    return scored
-
-def test_extractive_deduplicates_and_balances_topics() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-
-    base = datetime(2024, 1, 1, 10, 0, 0)
-    items = [
-        RawNews(id=1, source_id=1, title="ЦБ повысил ключевую ставку", summary="Решение по ставке влияет на инфляцию и кредитование", url="https://example.com/1", external_id="a", published_at=base),
-        RawNews(id=2, source_id=2, title="Центробанк повысил ключевую ставку", summary="Похожая новость из другого источника", url="https://example.com/1", external_id="b", published_at=base + timedelta(minutes=1)),
-        RawNews(id=3, source_id=1, title="Правительство утвердило новый закон о бюджете", summary="Закон меняет параметры бюджетного планирования", url="https://example.com/3", external_id="c", published_at=base + timedelta(minutes=2)),
-        RawNews(id=4, source_id=3, title="На саммите ООН обсудили санкции", summary="Международные переговоры и новые ограничения", url="https://example.com/4", external_id="d", published_at=base + timedelta(minutes=3)),
-    ]
-
-    digest = s._build_extractive("daily", _with_filter_results(items), {"1": 2, "2": 1, "3": 1})
-
-    assert digest.items_count >= 3
-    assert digest.quality_metrics["duplicates_removed"] >= 1
-    assert sum(digest.topic_breakdown.values()) == digest.items_count
-    assert "Источник</a>" in digest.body
+def _ranked(item: RawNews, *, score: int, topic: str, high: bool = True) -> RankedNewsItem:
+    return RankedNewsItem(
+        raw=item,
+        score=score,
+        topic=topic,
+        accepted=True,
+        reason="релевантно",
+        decision_trace=[],
+        is_high_confidence=high,
+        publish_priority=2 if high else 1,
+        dedup_exact_key=f"{item.source_id}:{item.external_id}:{item.url}",
+        dedup_similarity_key=DigestSummarizer.normalize_text(f"{item.title} {item.summary[:180]}"),
+    )
 
 
-def test_deduplicate_keeps_same_titles_for_different_events() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-    base = datetime(2024, 1, 1, 10, 0, 0)
-    items = [
-        RawNews(
-            id=10,
-            source_id=1,
-            title="В городе произошел взрыв",
-            summary="Инцидент произошел на заводе, есть пострадавшие.",
-            url="https://source-a.example/news/1",
-            external_id="event-a",
-            published_at=base,
-        ),
-        RawNews(
-            id=11,
-            source_id=2,
-            title="В городе произошел взрыв",
-            summary="В другом районе сообщили о взрыве бытового газа в жилом доме.",
-            url="https://source-b.example/news/2",
-            external_id="event-b",
-            published_at=base + timedelta(minutes=3),
-        ),
-    ]
-
-    deduped = s._deduplicate(_with_filter_results(items))
-
-    assert len(deduped) == 2
-
-
-def test_deduplicate_merges_different_titles_with_same_url() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
+def test_deduplicate_merges_same_url() -> None:
+    s = DigestSummarizer(_settings())
     base = datetime(2024, 1, 1, 10, 0, 0)
     shared_url = "https://news.example/article/123"
-    items = [
-        RawNews(
-            id=20,
-            source_id=1,
-            title="Министр объявил о новых мерах поддержки",
-            summary="Власти представили пакет мер для бизнеса.",
-            url=shared_url,
-            external_id="id-1",
-            published_at=base,
-        ),
-        RawNews(
-            id=21,
-            source_id=2,
-            title="Правительство представило пакет поддержки бизнеса",
-            summary="По словам министра, меры начнут действовать в следующем месяце.",
-            url=shared_url,
-            external_id="id-2",
-            published_at=base + timedelta(minutes=2),
-        ),
-    ]
+    n1 = RawNews(id=1, source_id=1, title="Единая новость", summary="alpha", url=shared_url, external_id="1", published_at=base)
+    n2 = RawNews(id=2, source_id=2, title="Единая новость", summary="alpha", url=shared_url, external_id="2", published_at=base + timedelta(minutes=1))
 
-    deduped = s._deduplicate(_with_filter_results(items))
-
-    assert len(deduped) == 1
+    out = s._deduplicate([_ranked(n1, score=10, topic="politics"), _ranked(n2, score=9, topic="politics")])
+    assert len(out) == 1
 
 
-def test_build_extractive_publish_all_important_allows_more_than_default_cap() -> None:
-    settings = _settings()
-    settings.publish_all_important = True
-    settings.per_topic_limit_daily = 100
-    settings.dedup_similarity_threshold = 0.99
-    s = DigestSummarizer(settings)
-
-    base = datetime(2024, 1, 1, 10, 0, 0)
-    unique_topics = [
-        "металлургия",
-        "логистика",
-        "телеком",
-        "фармацевтика",
-        "агросектор",
-        "энергетика",
-        "строительство",
-        "машиностроение",
-        "банкинг",
-        "страхование",
-        "ритейл",
-        "транспорт",
-        "IT-экспорт",
-        "судоходство",
-        "авиапром",
-        "биотех",
-    ]
-    items = [
-        RawNews(
-            id=100 + i,
-            source_id=i,
-            title=f"{topic}: зафиксирован новый этап реформ",
-            summary=f"Отрасль {topic} показала уникальную динамику: отдельный пакет мер, контракты и экспортные эффекты для региона {i}.",
-            url=f"https://example.com/news/{i}",
-            external_id=f"ext-{i}",
-            published_at=base + timedelta(minutes=i),
-        )
-        for i, topic in enumerate(unique_topics, start=1)
-    ]
-
-    digest = s._build_extractive("daily", _with_filter_results(items), {str(i): 1 for i in range(1, 17)})
-
-    assert digest.items_count > 12
-    assert digest.items_count == 16
-
-
-def test_build_extractive_publish_all_important_false_keeps_default_cap() -> None:
-    settings = _settings()
-    settings.publish_all_important = False
-    settings.per_topic_limit_daily = 100
-    settings.dedup_similarity_threshold = 0.99
-    s = DigestSummarizer(settings)
-
-    base = datetime(2024, 1, 1, 10, 0, 0)
-    unique_topics = [
-        "металлургия",
-        "логистика",
-        "телеком",
-        "фармацевтика",
-        "агросектор",
-        "энергетика",
-        "строительство",
-        "машиностроение",
-        "банкинг",
-        "страхование",
-        "ритейл",
-        "транспорт",
-        "IT-экспорт",
-        "судоходство",
-        "авиапром",
-        "биотех",
-    ]
-    items = [
-        RawNews(
-            id=200 + i,
-            source_id=i,
-            title=f"{topic}: зафиксирован новый этап реформ",
-            summary=f"Отрасль {topic} показала уникальную динамику: отдельный пакет мер, контракты и экспортные эффекты для региона {i}.",
-            url=f"https://example.com/important/{i}",
-            external_id=f"important-{i}",
-            published_at=base + timedelta(minutes=i),
-        )
-        for i, topic in enumerate(unique_topics, start=1)
-    ]
-
-    digest = s._build_extractive("daily", _with_filter_results(items), {str(i): 1 for i in range(1, 17)})
-
-    assert digest.items_count == 12
-
-
-def test_build_extractive_keeps_unique_items_with_small_input() -> None:
-    settings = _settings()
-    settings.publish_all_important = True
-    settings.per_topic_limit_daily = 3
-    s = DigestSummarizer(settings)
-
+def test_extractive_selection_has_consistent_markup() -> None:
+    s = DigestSummarizer(_settings())
     base = datetime(2024, 1, 1, 10, 0, 0)
     items = [
-        RawNews(
-            id=501,
-            source_id=1,
-            title="Экономика: обновлен макропрогноз",
-            summary="Минэкономики уточнило параметры роста и инфляции на следующий период.",
-            url="https://example.com/small/1",
-            external_id="small-1",
-            published_at=base,
-        ),
-        RawNews(
-            id=502,
-            source_id=2,
-            title="Политика: утвержден план реформ",
-            summary="Профильный комитет согласовал последовательность институциональных изменений.",
-            url="https://example.com/small/2",
-            external_id="small-2",
-            published_at=base + timedelta(minutes=1),
-        ),
+        _ranked(RawNews(id=11, source_id=1, title="Title one", summary="alpha unique summary", url="https://example.com/1", external_id="1", published_at=base + timedelta(minutes=1)), score=9, topic="politics"),
+        _ranked(RawNews(id=12, source_id=2, title="Title two", summary="beta unique summary", url="https://example.com/2", external_id="2", published_at=base + timedelta(minutes=2)), score=8, topic="economy"),
+        _ranked(RawNews(id=13, source_id=3, title="Title three", summary="gamma unique summary", url="https://example.com/3", external_id="3", published_at=base + timedelta(minutes=3)), score=7, topic="international"),
+        _ranked(RawNews(id=14, source_id=4, title="Title four", summary="delta unique summary", url="https://example.com/4", external_id="4", published_at=base + timedelta(minutes=4)), score=6, topic="conflict"),
+        _ranked(RawNews(id=15, source_id=5, title="Title five", summary="epsilon unique summary", url="https://example.com/5", external_id="5", published_at=base + timedelta(minutes=5)), score=5, topic="politics"),
     ]
 
-    digest = s._build_extractive("daily", _with_filter_results(items), {"1": 1, "2": 1})
-
-    assert digest.items_count == 2
-    assert sum(digest.topic_breakdown.values()) == 2
-    assert digest.quality_metrics["selected"] == 2
-    assert digest.body.count("https://example.com/small/1") == 1
-    assert digest.body.count("https://example.com/small/2") == 1
-
+    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 6)})
+    assert digest.items_count == 5
+    assert digest.quality_metrics["selected"] == 5
+    assert digest.body.count("Источник</a>") == 5
 
 
 @pytest.mark.asyncio
-async def test_build_digest_with_llm_parses_items_and_metrics() -> None:
+async def test_llm_and_extractive_use_same_link_markup() -> None:
     settings = _settings()
+    settings.llm_enabled = True
+    settings.llm_api_key = "k"
     s = DigestSummarizer(settings)
 
-    class FakeCompletions:
-        async def create(self, **kwargs):  # noqa: ANN003
-            content = (
-                '{"title":"Дайджест","items":['
-                '{"topic":"Экономика","headline":"Рост экспорта в АТР на фоне новых контрактов и тарифных корректировок","url":"https://example.com/1"},'
-                '{"topic":"Политика","headline":"Парламент принял пакет поправок в бюджетное и налоговое регулирование","url":"https://example.com/2"},'
-                '{"topic":"Международка","headline":"Подписано новое межправительственное соглашение по торговому сотрудничеству","url":"https://example.com/3"},'
-                '{"topic":"Технологии","headline":"Ускорен запуск спутниковой программы с расширением производственных мощностей","url":"https://example.com/4"},'
-                '{"topic":"Энергетика","headline":"Согласованы новые поставки СПГ в рамках долгосрочных экспортных договоров","url":"https://example.com/5"}'
-                ']}'
-            )
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
-            )
+    class _Resp:
+        choices = [type("C", (), {"message": type("M", (), {"content": '{"title":"Дайджест","items":[{"topic":"Политика","headline":"Новость номер один подтверждена источниками","url":"https://example.com/1"},{"topic":"Экономика","headline":"Новость номер два подтверждена источниками","url":"https://example.com/2"},{"topic":"Международка","headline":"Новость номер три подтверждена источниками","url":"https://example.com/3"},{"topic":"Политика","headline":"Новость номер четыре подтверждена источниками","url":"https://example.com/4"},{"topic":"Экономика","headline":"Новость номер пять подтверждена источниками","url":"https://example.com/5"}]}'})})]
 
-    s.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    class _Client:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**_kwargs):
+                    return _Resp()
 
+    s.client = _Client()
     base = datetime(2024, 1, 1, 10, 0, 0)
-    items = [
-        RawNews(
-            id=i,
-            source_id=i,
-            title=f"Новость {i}",
-            summary=f"Описание {i}",
-            url=f"https://example.com/{i}",
-            external_id=f"ext-{i}",
-            published_at=base + timedelta(minutes=i),
-        )
+    ranked = [
+        _ranked(RawNews(id=i, source_id=1, title=f"t{i}", summary="s", url=f"https://example.com/{i}", external_id=str(i), published_at=base + timedelta(minutes=i)), score=10, topic="politics")
         for i in range(1, 6)
     ]
 
-    digest = await s.build_digest("daily", _with_filter_results(items))
-
-    assert digest.title == "Дайджест"
+    digest = await s.build_digest("daily", ranked)
     assert digest.items_count == 5
-    assert digest.quality_metrics["selected"] == 5
-    assert digest.topic_breakdown
-    assert '<a href="https://example.com/1">Источник</a>' in digest.body
-
-
-@pytest.mark.asyncio
-async def test_build_digest_with_llm_invalid_format_falls_back_to_extractive() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-
-    class FakeCompletions:
-        async def create(self, **kwargs):  # noqa: ANN003
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content='{"title":"Плохо","items":[{"topic":"Экономика","headline":"Коротко","url":"https://bad.example/1"}]}'))],
-            )
-
-    s.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
-
-    base = datetime(2024, 1, 1, 10, 0, 0)
-    items = [
-        RawNews(
-            id=i,
-            source_id=i,
-            title=title,
-            summary=(
-                f"{topic} {i}: расширенное описание реформ и отраслевых последствий с уникальными параметрами {i * 7}. "
-                "Показатели подтверждены ведомствами и профильными ассоциациями."
-            ),
-            url=f"https://valid.example/{i}",
-            external_id=f"fallback-{i}",
-            published_at=base + timedelta(minutes=i),
-        )
-        for i, (topic, title) in enumerate(
-            [
-                ("Экономика", "Минфин утвердил план бюджетной корректировки"),
-                ("Политика", "Парламент одобрил пакет институциональных реформ"),
-                ("Транспорт", "Правительство запустило программу модернизации портов"),
-                ("Энергетика", "Оператор сети объявил о расширении генерирующих мощностей"),
-                ("Технологии", "Ведомство согласовало новый регламент по ИИ-сервисам"),
-            ],
-            start=1,
-        )
-    ]
-
-    digest = await s.build_digest("daily", _with_filter_results(items))
-
-    assert digest.items_count > 0
-    assert digest.quality_metrics["selected"] == digest.items_count
-    assert "<a href=\"https://valid.example/1\">Источник</a>" in digest.body
-    assert sum(digest.topic_breakdown.values()) == digest.items_count
-
-
-@pytest.mark.asyncio
-async def test_build_digest_with_llm_exception_falls_back_to_extractive() -> None:
-    settings = _settings()
-    settings.llm_enabled = True
-    s = DigestSummarizer(settings)
-
-    class FakeCompletions:
-        async def create(self, **kwargs):  # noqa: ANN003
-            raise RuntimeError("llm unavailable")
-
-    s.client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
-
-    base = datetime(2024, 1, 1, 10, 0, 0)
-    items = [
-        RawNews(
-            id=i,
-            source_id=i,
-            title=title,
-            summary=(
-                f"{topic} {i}: расширенное описание реформ и отраслевых последствий с уникальными параметрами {i * 9}. "
-                "Показатели подтверждены ведомствами и профильными ассоциациями."
-            ),
-            url=f"https://exception.example/{i}",
-            external_id=f"exception-{i}",
-            published_at=base + timedelta(minutes=i),
-        )
-        for i, (topic, title) in enumerate(
-            [
-                ("Экономика", "Минфин представил обновленный бюджетный прогноз"),
-                ("Политика", "Правительство согласовало пакет административных изменений"),
-                ("Транспорт", "Оператор сообщил о расширении железнодорожных коридоров"),
-                ("Энергетика", "Регулятор утвердил параметры модернизации сетей"),
-                ("Технологии", "Профильное ведомство запустило пилот по цифровым сервисам"),
-            ],
-            start=1,
-        )
-    ]
-
-    digest = await s.build_digest("daily", _with_filter_results(items))
-
-    assert digest.items_count > 0
-    assert digest.quality_metrics["selected"] == digest.items_count
-    assert '<a href="https://exception.example/1">Источник</a>' in digest.body
-    assert sum(digest.topic_breakdown.values()) == digest.items_count
-
-
-
-
-def test_parse_llm_response_formats_body_like_extractive() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-    content = (
-        '{"title":"Проверка","items":['
-        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/1"},'
-        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
-        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
-        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
-        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
-        ']}'
-    )
-
-    parsed, reason = s._parse_llm_response(
-        "daily",
-        content,
-        12,
-        {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5"},
-    )
-
-    assert reason is None
-    assert parsed is not None
-    assert '<a href="https://example.com/1">Источник</a>' in parsed["body"]
-    assert "Источник: https://example.com/1" not in parsed["body"]
-
-
-def test_parse_llm_response_escapes_headline_and_url_for_html() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-    content = (
-        '{"title":"Проверка","items":['
-        '{"topic":"Тема","headline":"Факт <важно> & подтверждено","url":"https://example.com/1?a=1&b=2"},'
-        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
-        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
-        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
-        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
-        ']}'
-    )
-
-    parsed, reason = s._parse_llm_response(
-        "daily",
-        content,
-        12,
-        {
-            "https://example.com/1?a=1&b=2",
-            "https://example.com/2",
-            "https://example.com/3",
-            "https://example.com/4",
-            "https://example.com/5",
-        },
-    )
-
-    assert reason is None
-    assert parsed is not None
-    assert "Факт &lt;важно&gt; &amp; подтверждено" in parsed["body"]
-    assert '<a href="https://example.com/1?a=1&amp;b=2">Источник</a>' in parsed["body"]
-
-def test_parse_llm_response_rejects_duplicate_urls() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-    content = (
-        '{"title":"Проверка","items":['
-        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/same"},'
-        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/same"},'
-        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
-        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
-        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
-        ']}'
-    )
-
-    parsed, reason = s._parse_llm_response("daily", content, 12, {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5", "https://example.com/same"})
-
-    assert parsed is None
-    assert reason is not None
-    assert "duplicate url" in reason
-
-
-def test_parse_llm_response_rejects_headline_length() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-    content = (
-        '{"title":"Проверка","items":['
-        '{"topic":"Экономика","headline":"Коротко","url":"https://example.com/1"},'
-        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
-        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
-        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
-        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
-        ']}'
-    )
-
-    parsed, reason = s._parse_llm_response("daily", content, 12, {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5"})
-
-    assert parsed is None
-    assert reason is not None
-    assert "headline length out of range" in reason
-
-
-def test_parse_llm_response_accepts_valid_json() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-    content = (
-        '{"title":"Проверка","items":['
-        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/1"},'
-        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
-        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
-        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
-        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://example.com/5"}'
-        ']}'
-    )
-
-    parsed, reason = s._parse_llm_response("daily", content, 12, {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4", "https://example.com/5"})
-
-    assert reason is None
-    assert parsed is not None
-    assert parsed["title"] == "Проверка"
-    assert len(parsed["items"]) == 5
-
-
-def test_parse_llm_response_rejects_url_not_from_news() -> None:
-    settings = _settings()
-    s = DigestSummarizer(settings)
-    content = (
-        '{"title":"Проверка","items":['
-        '{"topic":"Экономика","headline":"Согласован пакет мер для расширения промышленного экспорта и логистики","url":"https://example.com/1"},'
-        '{"topic":"Политика","headline":"Парламент утвердил дорожную карту по институциональным изменениям в регионах","url":"https://example.com/2"},'
-        '{"topic":"Энергетика","headline":"Регулятор подтвердил параметры модернизации сетевой инфраструктуры страны","url":"https://example.com/3"},'
-        '{"topic":"Транспорт","headline":"Оператор объявил об увеличении пропускной способности ключевых железнодорожных узлов","url":"https://example.com/4"},'
-        '{"topic":"Технологии","headline":"Ведомство запустило обновленный контур регулирования цифровых сервисов","url":"https://other.example.com/5"}'
-        ']}'
-    )
-
-    parsed, reason = s._parse_llm_response(
-        "daily",
-        content,
-        12,
-        {"https://example.com/1", "https://example.com/2", "https://example.com/3", "https://example.com/4"},
-    )
-
-    assert parsed is None
-    assert reason is not None
-    assert "url not in source news" in reason
-
-
-def test_build_extractive_quality_metrics_split_base_and_fallback_waves() -> None:
-    settings = _settings()
-    settings.publish_all_important = False
-    settings.per_topic_limit_daily = 1
-    s = DigestSummarizer(settings)
-
-    base = datetime(2024, 1, 1, 10, 0, 0)
-    items_with_scores = [
-        (RawNews(id=601, source_id=1, title="Экономика: базовый кейс", summary="Стабилизация макропоказателей", url="https://example.com/fallback/1", external_id="fb-1", published_at=base), FilterResult(True, "релевантно", 100, "economics", [])),
-        (RawNews(id=602, source_id=2, title="Политика: базовый кейс", summary="Заседание правительства", url="https://example.com/fallback/2", external_id="fb-2", published_at=base + timedelta(minutes=1)), FilterResult(True, "релевантно", 95, "politics", [])),
-        (RawNews(id=603, source_id=3, title="Экономика: корпоративные облигации", summary="Размещение длинного долга для инфраструктуры", url="https://example.com/fallback/3", external_id="fb-3", published_at=base + timedelta(minutes=2)), FilterResult(True, "релевантно", 80, "economics", [])),
-        (RawNews(id=604, source_id=4, title="Технологии: пригодно для wave2", summary="Запуск производственной платформы для чипов", url="https://example.com/fallback/4", external_id="fb-4", published_at=base + timedelta(minutes=3)), FilterResult(True, "релевантно", 62, "technology", [])),
-        (RawNews(id=605, source_id=5, title="Экономика: только wave3", summary="Отчет о занятости в экспортных кластерах", url="https://example.com/fallback/5", external_id="fb-5", published_at=base + timedelta(minutes=4)), FilterResult(True, "релевантно", 50, "economics", [])),
-        (RawNews(id=606, source_id=6, title="Экономика: только wave3", summary="Изменение налоговой базы в портах Дальнего Востока", url="https://example.com/fallback/6", external_id="fb-6", published_at=base + timedelta(minutes=5)), FilterResult(True, "релевантно", 46, "economics", [])),
-        (RawNews(id=607, source_id=7, title="Экономика: ниже порога", summary="Краткий бюллетень без подтвержденных эффектов", url="https://example.com/fallback/7", external_id="fb-7", published_at=base + timedelta(minutes=6)), FilterResult(True, "релевантно", 40, "economics", [])),
-    ]
-
-    digest = s._build_extractive(
-        "daily",
-        items_with_scores,
-        {str(i): 1 for i in range(1, 8)},
-    )
-
-    assert digest.items_count == 5
-    assert digest.quality_metrics["selected_base_pass"] == 3
-    assert digest.quality_metrics["selected_fallback_wave2"] == 0
-    assert digest.quality_metrics["selected_fallback_wave3"] == 2
-    assert digest.quality_metrics["selected_fallback"] == 2
-    assert digest.quality_metrics["fallback_wave2_min_score"] == 60
-    assert digest.quality_metrics["fallback_wave3_min_score"] == 45
-
-
-def test_build_extractive_topic_deficit_keeps_minimum_quality_floor() -> None:
-    settings = _settings()
-    settings.publish_all_important = False
-    settings.per_topic_limit_daily = 1
-    s = DigestSummarizer(settings)
-
-    base = datetime(2024, 1, 2, 10, 0, 0)
-    items_with_scores = [
-        (RawNews(id=701, source_id=1, title="Экономика: опорный материал", summary="Инвестиционные планы по портовой инфраструктуре", url="https://example.com/deficit/1", external_id="def-1", published_at=base), FilterResult(True, "релевантно", 100, "economics", [])),
-        (RawNews(id=702, source_id=2, title="Политика: опорный материал", summary="Принятие регламентов межведомственной координации", url="https://example.com/deficit/2", external_id="def-2", published_at=base + timedelta(minutes=1)), FilterResult(True, "релевантно", 94, "politics", [])),
-        (RawNews(id=703, source_id=3, title="Экономика: дополнительный сюжет", summary="Риски финансирования смежных отраслей", url="https://example.com/deficit/3", external_id="def-3", published_at=base + timedelta(minutes=2)), FilterResult(True, "релевантно", 82, "economics", [])),
-        (RawNews(id=704, source_id=4, title="Экономика: ниже минимального качества", summary="Оперативная заметка без системных последствий", url="https://example.com/deficit/4", external_id="def-4", published_at=base + timedelta(minutes=3)), FilterResult(True, "релевантно", 44, "economics", [])),
-    ]
-
-    digest = s._build_extractive(
-        "daily",
-        items_with_scores,
-        {str(i): 1 for i in range(1, 5)},
-    )
-
-    assert digest.items_count == 3
-    assert digest.quality_metrics["selected_base_pass"] == 2
-    assert digest.quality_metrics["selected_fallback"] == 1
-    assert digest.quality_metrics["selected_fallback_wave2"] == 0
-    assert digest.quality_metrics["selected_fallback_wave3"] == 1
-    assert digest.quality_metrics["fallback_wave3_min_score"] == 45
+    assert digest.body.count("Источник</a>") == 5

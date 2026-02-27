@@ -28,8 +28,6 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="gpt-4o-mini", alias="LLM_MODEL")
     llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
 
-    fetch_timeout_seconds: int = Field(default=20, alias="FETCH_TIMEOUT_SECONDS")
-
     min_publish_score: int = Field(default=2, alias="MIN_PUBLISH_SCORE")
     high_confidence_min_count_daily: int = Field(default=5, alias="HIGH_CONFIDENCE_MIN_COUNT_DAILY")
     high_confidence_min_count_weekly: int = Field(default=7, alias="HIGH_CONFIDENCE_MIN_COUNT_WEEKLY")
@@ -37,7 +35,6 @@ class Settings(BaseSettings):
     dedup_threshold_cross_source: float = Field(default=0.92, alias="DEDUP_THRESHOLD_CROSS_SOURCE")
     per_topic_limit: int = Field(default=4, alias="PER_TOPIC_LIMIT")
     max_period_news: int = Field(default=500, alias="MAX_PERIOD_NEWS")
-    filter_threshold_profile: str = Field(default="balanced", alias="FILTER_THRESHOLD_PROFILE")
 
     @model_validator(mode="before")
     @classmethod
