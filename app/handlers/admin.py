@@ -426,6 +426,9 @@ async def quality(message: Message, settings: Settings) -> None:
     removed_as_duplicates = int(qm.get("removed_as_duplicates_total", qm.get("duplicates_removed_total", 0)))
     removed_by_topic_limit = int(qm.get("removed_by_topic_limit_total", 0))
     published_items = int(qm.get("published_items_total", qm.get("selected_total", 0)))
+    selected_primary = int(qm.get("selected_primary_total", qm.get("selected_total", 0)))
+    selected_fallback = int(qm.get("selected_fallback_total", 0))
+    selected_fallback_share = float(qm.get("selected_fallback_share", 0.0))
 
     async with get_session_factory()() as session:
         delivery_repo = NewsRepository(session, timezone=settings.timezone)
@@ -443,7 +446,8 @@ async def quality(message: Message, settings: Settings) -> None:
         f"5) Опубликовано пунктов: {published_items}\n\n"
         f"Acceptance rate: {qm.get('acceptance_rate', 0):.0%}\n"
         f"После дедупликации: {qm.get('deduplicated_total', 0)}\n"
-        f"Выбрано всего: {qm.get('selected_total', 0)}\n\n"
+        f"Выбрано всего: {qm.get('selected_total', 0)}\n"
+        f"Primary/Fallback: {selected_primary}/{selected_fallback} ({selected_fallback_share:.0%} fallback)\n\n"
         f"Распределение тем:\n" + "\n".join(topics) + "\n\n"
         f"Причины отклонений:\n" + "\n".join(reasons) + "\n\n" + sla_block
     )

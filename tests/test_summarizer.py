@@ -89,3 +89,26 @@ async def test_llm_and_extractive_use_same_link_markup() -> None:
     digest = await s.build_digest("daily", ranked)
     assert digest.items_count == 5
     assert digest.body.count("Источник</a>") == 5
+
+
+def test_extractive_uses_min_floor_fallback_to_reach_min_items() -> None:
+    settings = _settings()
+    settings.min_publish_score = 3
+    s = DigestSummarizer(settings)
+    base = datetime(2024, 1, 1, 10, 0, 0)
+
+    items = [
+        _ranked(RawNews(id=21, source_id=1, title="A", summary="s1 unique", url="https://example.com/a", external_id="a", published_at=base + timedelta(minutes=1)), score=10, topic="politics", high=True),
+        _ranked(RawNews(id=22, source_id=2, title="B", summary="s2 unique", url="https://example.com/b", external_id="b", published_at=base + timedelta(minutes=2)), score=3, topic="economy", high=False),
+        _ranked(RawNews(id=23, source_id=3, title="C", summary="s3 unique", url="https://example.com/c", external_id="c", published_at=base + timedelta(minutes=3)), score=2, topic="international", high=False),
+        _ranked(RawNews(id=24, source_id=4, title="D", summary="s4 unique", url="https://example.com/d", external_id="d", published_at=base + timedelta(minutes=4)), score=1, topic="conflict", high=False),
+        _ranked(RawNews(id=25, source_id=5, title="E", summary="s5 unique", url="https://example.com/e", external_id="e", published_at=base + timedelta(minutes=5)), score=1, topic="politics", high=False),
+    ]
+
+    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 6)})
+
+    assert digest.items_count == 5
+    assert digest.quality_metrics["selected_primary"] == 1
+    assert digest.quality_metrics["selected_fallback"] == 4
+    assert digest.quality_metrics["selected_fallback_min_floor"] == 4
+    assert digest.quality_metrics["fallback_min_refill_score"] == 1

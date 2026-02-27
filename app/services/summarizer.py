@@ -68,6 +68,7 @@ class DigestSummarizer:
     _DIGEST_MIN_ITEMS = {"daily": 5, "weekly": 7}
     _EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO = 0.6
     _EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO = 0.45
+    _EXTRACTIVE_MIN_REFILL_SCORE = 1
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -88,7 +89,7 @@ class DigestSummarizer:
                     "accepted_before_dedup": 0,
                     "deduplicated": 0,
                     "selected": 0,
-                    "selected_base_pass": 0,
+                    "selected_primary": 0,
                     "selected_fallback": 0,
                     "selected_fallback_wave2": 0,
                     "selected_fallback_wave3": 0,
@@ -119,7 +120,7 @@ class DigestSummarizer:
                         "accepted_before_dedup": len(news),
                         "deduplicated": len(news),
                         "selected": len(generated["items"]),
-                        "selected_base_pass": len(generated["items"]),
+                        "selected_primary": len(generated["items"]),
                         "selected_fallback": 0,
                         "selected_fallback_wave2": 0,
                         "selected_fallback_wave3": 0,
@@ -257,14 +258,16 @@ class DigestSummarizer:
             topic_count[entry.topic] += 1
 
         target_count = max(min_items, cap)
-        base_selected_count = len(selected)
+        primary_selected_count = len(selected)
 
         wave2_added = 0
         wave3_added = 0
+        min_floor_added = 0
 
         top_score = ranked[0].score if ranked else 0
         wave2_floor = max(self.settings.min_publish_score, int(round(top_score * self._EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO)))
         wave3_floor = max(1, int(round(top_score * self._EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO)))
+        min_refill_floor = self._EXTRACTIVE_MIN_REFILL_SCORE
 
         for entry in ranked:
             if len(selected) >= target_count:
@@ -291,6 +294,19 @@ class DigestSummarizer:
             selected_ids.add(entry.raw.id)
             topic_count[entry.topic] += 1
             wave3_added += 1
+
+        for entry in ranked:
+            if len(selected) >= min_items:
+                break
+            if entry.raw.id in selected_ids or entry.score < min_refill_floor:
+                continue
+            if topic_count[entry.topic] >= per_topic_limit:
+                removed_by_topic_limit += 1
+                continue
+            selected.append(entry)
+            selected_ids.add(entry.raw.id)
+            topic_count[entry.topic] += 1
+            min_floor_added += 1
 
         title = "Итоги дня: политика и экономика" if period_type == "daily" else "Итоги недели: ключевые изменения"
         lines: list[str] = []
@@ -320,14 +336,16 @@ class DigestSummarizer:
                 "accepted_before_dedup": len(news),
                 "deduplicated": len(deduped),
                 "selected": len(selected),
-                "selected_base_pass": base_selected_count,
-                "selected_fallback": wave2_added + wave3_added,
+                "selected_primary": primary_selected_count,
+                "selected_fallback": wave2_added + wave3_added + min_floor_added,
                 "selected_fallback_wave2": wave2_added,
                 "selected_fallback_wave3": wave3_added,
+                "selected_fallback_min_floor": min_floor_added,
                 "duplicates_removed": max(0, len(news) - len(deduped)),
                 "removed_by_topic_limit": removed_by_topic_limit,
                 "fallback_wave2_min_score": wave2_floor,
                 "fallback_wave3_min_score": wave3_floor,
+                "fallback_min_refill_score": min_refill_floor,
             },
         )
 

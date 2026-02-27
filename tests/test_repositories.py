@@ -127,6 +127,8 @@ def test_aggregate_quality_sums_new_funnel_metrics() -> None:
                 "removed_as_duplicates": 1,
                 "removed_by_topic_limit": 1,
                 "published_items": 2,
+                "selected_primary": 1,
+                "selected_fallback": 1,
                 "rejection_reasons": {"low_relevance": 1},
             },
         ),
@@ -147,6 +149,8 @@ def test_aggregate_quality_sums_new_funnel_metrics() -> None:
                 "removed_as_duplicates": 1,
                 "removed_by_topic_limit": 0,
                 "published_items": 1,
+                "selected_primary": 1,
+                "selected_fallback": 0,
                 "rejection_reasons": {"noise": 1},
             },
         ),
@@ -164,6 +168,9 @@ def test_aggregate_quality_sums_new_funnel_metrics() -> None:
     assert metrics["removed_as_duplicates_total"] == 2
     assert metrics["removed_by_topic_limit_total"] == 1
     assert metrics["published_items_total"] == 3
+    assert metrics["selected_primary_total"] == 2
+    assert metrics["selected_fallback_total"] == 1
+    assert metrics["selected_fallback_share"] == 0.3333
     assert metrics["rejection_reasons"] == {"low_relevance": 3}
 
 
