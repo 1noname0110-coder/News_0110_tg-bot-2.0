@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.models import RawNews
 from app.periods import get_calendar_day_bounds, get_calendar_week_bounds
-from app.repositories import NewsRepository, SourceRepository, source_trust_coefficient
+from app.repositories import DigestDeliveryStatus, NewsRepository, SourceRepository, source_trust_coefficient
 from app.services.collector import NewsCollector
 from app.services.filtering import FilterResult, NewsFilter
 from app.services.pipeline import RankedNewsItem
@@ -140,7 +140,8 @@ class DigestService:
             return {"status": "not_found", "total_chunks": 0, "sent_chunks": 0, "failed_chunks": []}
 
         sent_chunks = await news_repo.get_successfully_delivered_chunks(digest_id)
-        return await self._send_digest_messages(
+        await news_repo.transition_digest_status(digest_id, status=DigestDeliveryStatus.SENDING)
+        send_result = await self._send_digest_messages(
             bot,
             digest.title,
             digest.body,
@@ -148,6 +149,16 @@ class DigestService:
             digest_id=digest_id,
             skip_chunk_indexes=sent_chunks,
         )
+        final_status_value = str(send_result.get("status", DigestDeliveryStatus.FAILED.value))
+        if final_status_value == "success":
+            final_status_value = DigestDeliveryStatus.SENT.value
+        final_status = DigestDeliveryStatus(final_status_value)
+        await news_repo.transition_digest_status(
+            digest_id,
+            status=final_status,
+            delivery_payload=send_result,
+        )
+        return send_result
 
     async def publish_weekly(self, bot: Bot, session: AsyncSession) -> None:
         tz = ZoneInfo(self.settings.timezone)
@@ -269,7 +280,7 @@ class DigestService:
             suspicious_rejections / quality_metrics["rejected_total"] if quality_metrics["rejected_total"] else 0.0
         )
 
-        quality_metrics["delivery_status"] = "prepared"
+        quality_metrics["delivery_status"] = DigestDeliveryStatus.PREPARED.value
         prepared = await news_repo.publish_digest(
             period_type=period_type,
             period_start=start_dt,
@@ -280,8 +291,10 @@ class DigestService:
             source_breakdown=digest.source_breakdown,
             topic_breakdown=digest.topic_breakdown,
             quality_metrics=quality_metrics,
+            status=DigestDeliveryStatus.PREPARED,
         )
 
+        await news_repo.transition_digest_status(prepared.id, status=DigestDeliveryStatus.SENDING)
         send_result = await self._send_digest_messages(
             bot,
             digest.title,
@@ -289,14 +302,13 @@ class DigestService:
             news_repo=news_repo,
             digest_id=prepared.id,
         )
-        quality_metrics["delivery"] = send_result
-        delivery_status = str(send_result.get("status", "failed"))
-        if delivery_status == "success":
-            delivery_status = "sent"
-        quality_metrics["delivery_status"] = delivery_status
-        await news_repo.update_digest_delivery(
+        final_status_value = str(send_result.get("status", DigestDeliveryStatus.FAILED.value))
+        if final_status_value == "success":
+            final_status_value = DigestDeliveryStatus.SENT.value
+        final_status = DigestDeliveryStatus(final_status_value)
+        await news_repo.transition_digest_status(
             prepared.id,
-            delivery_status=delivery_status,
+            status=final_status,
             delivery_payload=send_result,
         )
 
@@ -339,18 +351,20 @@ class DigestService:
             )
 
             for attempt in range(1, self.SEND_RETRY_ATTEMPTS + 1):
-                await news_repo.add_delivery_attempt(
+                await news_repo.record_chunk_attempt_and_transition(
                     digest_id=digest_id,
                     chunk_idx=idx,
-                    status="attempt",
+                    attempt_status="attempt",
+                    digest_status=DigestDeliveryStatus.SENDING,
                 )
                 logger.info("Дайджест: попытка отправки чанка %s/%s (попытка %s/%s)", idx, total, attempt, self.SEND_RETRY_ATTEMPTS)
                 try:
                     await bot.send_message(chat_id=self.settings.channel_id, text=header + chunk)
-                    await news_repo.add_delivery_attempt(
+                    await news_repo.record_chunk_attempt_and_transition(
                         digest_id=digest_id,
                         chunk_idx=idx,
-                        status="success",
+                        attempt_status="success",
+                        digest_status=DigestDeliveryStatus.SENDING,
                     )
                     sent_chunks += 1
                     sent = True
@@ -370,10 +384,10 @@ class DigestService:
                             attempt,
                             exc.retry_after,
                         )
-                        await news_repo.add_delivery_attempt(
+                        await news_repo.record_chunk_attempt_and_transition(
                             digest_id=digest_id,
                             chunk_idx=idx,
-                            status="failed",
+                            attempt_status="failed",
                             error_type=type(exc).__name__,
                             error_message=str(exc),
                         )
@@ -388,10 +402,10 @@ class DigestService:
                         attempt,
                         self.SEND_RETRY_ATTEMPTS,
                     )
-                    await news_repo.add_delivery_attempt(
+                    await news_repo.record_chunk_attempt_and_transition(
                         digest_id=digest_id,
                         chunk_idx=idx,
-                        status="retry",
+                        attempt_status="retry",
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                     )
@@ -405,10 +419,10 @@ class DigestService:
                             attempt,
                             type(exc).__name__,
                         )
-                        await news_repo.add_delivery_attempt(
+                        await news_repo.record_chunk_attempt_and_transition(
                             digest_id=digest_id,
                             chunk_idx=idx,
-                            status="failed",
+                            attempt_status="failed",
                             error_type=type(exc).__name__,
                             error_message=str(exc),
                         )
@@ -422,10 +436,10 @@ class DigestService:
                         attempt,
                         self.SEND_RETRY_ATTEMPTS,
                     )
-                    await news_repo.add_delivery_attempt(
+                    await news_repo.record_chunk_attempt_and_transition(
                         digest_id=digest_id,
                         chunk_idx=idx,
-                        status="retry",
+                        attempt_status="retry",
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                     )
@@ -437,20 +451,20 @@ class DigestService:
                         total,
                         type(exc).__name__,
                     )
-                    await news_repo.add_delivery_attempt(
+                    await news_repo.record_chunk_attempt_and_transition(
                         digest_id=digest_id,
                         chunk_idx=idx,
-                        status="failed",
+                        attempt_status="failed",
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                     )
                     break
                 except TelegramAPIError as exc:
                     logger.exception("Дайджест: чанк %s/%s не отправлен из-за ошибки Telegram API", idx, total)
-                    await news_repo.add_delivery_attempt(
+                    await news_repo.record_chunk_attempt_and_transition(
                         digest_id=digest_id,
                         chunk_idx=idx,
-                        status="failed",
+                        attempt_status="failed",
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                     )

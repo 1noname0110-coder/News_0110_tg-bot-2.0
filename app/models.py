@@ -50,6 +50,7 @@ class PublishedNews(Base):
     source_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
     topic_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
     quality_metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="prepared")
     published_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

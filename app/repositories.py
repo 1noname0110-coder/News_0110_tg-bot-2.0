@@ -16,6 +16,14 @@ from app.models import DailyStats, DeliveryAttempt, PublishedNews, RawNews, Reje
 
 ALLOWED_SOURCE_TYPES = {"rss", "site", "api"}
 
+
+class DigestDeliveryStatus(str, Enum):
+    PREPARED = "prepared"
+    SENDING = "sending"
+    SENT = "sent"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
 def source_trust_coefficient(meta: dict | None) -> float:
     if not isinstance(meta, dict):
         return 1.0
@@ -403,6 +411,12 @@ class NewsRepository:
         )
         return list(result.scalars().all())
 
+    @staticmethod
+    def _normalize_digest_status(status: DigestDeliveryStatus | str) -> str:
+        if isinstance(status, DigestDeliveryStatus):
+            return status.value
+        return str(status)
+
     async def publish_digest(
         self,
         period_type: str,
@@ -414,6 +428,7 @@ class NewsRepository:
         source_breakdown: dict,
         topic_breakdown: dict,
         quality_metrics: dict,
+        status: DigestDeliveryStatus | str = DigestDeliveryStatus.PREPARED,
     ) -> PublishedNews:
         row = PublishedNews(
             period_type=period_type,
@@ -425,6 +440,7 @@ class NewsRepository:
             source_breakdown=source_breakdown,
             topic_breakdown=topic_breakdown,
             quality_metrics=quality_metrics,
+            status=self._normalize_digest_status(status),
         )
         self.session.add(row)
         await self.session.commit()
@@ -432,20 +448,58 @@ class NewsRepository:
         return row
 
 
-    async def update_digest_delivery(
+    async def transition_digest_status(
         self,
         digest_id: int,
         *,
-        delivery_status: str,
-        delivery_payload: dict,
+        status: DigestDeliveryStatus | str,
+        delivery_payload: dict | None = None,
     ) -> PublishedNews | None:
         row = await self.session.get(PublishedNews, digest_id)
         if row is None:
             return None
+
+        row.status = self._normalize_digest_status(status)
         quality = dict(row.quality_metrics or {})
-        quality["delivery"] = dict(delivery_payload)
-        quality["delivery_status"] = delivery_status
+        quality["delivery_status"] = row.status
+        if delivery_payload is not None:
+            quality["delivery"] = dict(delivery_payload)
         row.quality_metrics = quality
+
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
+    async def record_chunk_attempt_and_transition(
+        self,
+        *,
+        digest_id: int | None,
+        chunk_idx: int,
+        attempt_status: str,
+        digest_status: DigestDeliveryStatus | str | None = None,
+        delivery_payload: dict | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> DeliveryAttempt:
+        row = DeliveryAttempt(
+            digest_id=digest_id,
+            chunk_idx=chunk_idx,
+            status=attempt_status,
+            error_type=error_type,
+            error_message=error_message,
+        )
+        self.session.add(row)
+
+        if digest_id is not None and digest_status is not None:
+            digest = await self.session.get(PublishedNews, digest_id)
+            if digest is not None:
+                digest.status = self._normalize_digest_status(digest_status)
+                quality = dict(digest.quality_metrics or {})
+                quality["delivery_status"] = digest.status
+                if delivery_payload is not None:
+                    quality["delivery"] = dict(delivery_payload)
+                digest.quality_metrics = quality
+
         await self.session.commit()
         await self.session.refresh(row)
         return row
@@ -456,19 +510,17 @@ class NewsRepository:
         period_start: datetime,
         period_end: datetime,
     ) -> bool:
-        query = select(PublishedNews).where(
-            and_(
-                PublishedNews.period_type == period_type,
-                PublishedNews.period_start == period_start,
-                PublishedNews.period_end == period_end,
+        row = await self.session.scalar(
+            select(PublishedNews.id).where(
+                and_(
+                    PublishedNews.period_type == period_type,
+                    PublishedNews.period_start == period_start,
+                    PublishedNews.period_end == period_end,
+                    PublishedNews.status == DigestDeliveryStatus.SENT.value,
+                )
             )
         )
-        rows = list((await self.session.execute(query)).scalars().all())
-        for row in rows:
-            status = str((row.quality_metrics or {}).get("delivery_status", ""))
-            if status == "sent":
-                return True
-        return False
+        return row is not None
 
     async def compute_daily_stats(self, stat_date: date) -> DailyStats:
         start, end = self._local_period_to_utc_bounds(

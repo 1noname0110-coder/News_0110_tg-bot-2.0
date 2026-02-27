@@ -581,3 +581,52 @@ def test_source_trust_coefficient_defaults_and_bounds() -> None:
     assert source_trust_coefficient({"trust_coefficient": 2.5}) == 1.5
     assert source_trust_coefficient({"trust_coefficient": 0.2}) == 0.5
 
+
+
+def test_is_period_already_published_checks_only_sent_status() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        Session = async_sessionmaker(engine, expire_on_commit=False)
+
+        start_dt = datetime(2026, 1, 1, 0, 0, 0)
+        end_dt = datetime(2026, 1, 2, 0, 0, 0)
+
+        async with Session() as session:
+            repo = NewsRepository(session)
+            await repo.publish_digest(
+                period_type="daily",
+                period_start=start_dt,
+                period_end=end_dt,
+                title="t",
+                body="b",
+                items_count=1,
+                source_breakdown={},
+                topic_breakdown={},
+                quality_metrics={"delivery_status": "partial"},
+                status="partial",
+            )
+
+            assert await repo.is_period_already_published("daily", start_dt, end_dt) is False
+
+            sent_row = await repo.publish_digest(
+                period_type="daily",
+                period_start=start_dt,
+                period_end=end_dt,
+                title="t2",
+                body="b2",
+                items_count=1,
+                source_breakdown={},
+                topic_breakdown={},
+                quality_metrics={"delivery_status": "sent"},
+                status="sent",
+            )
+            await repo.transition_digest_status(sent_row.id, status="sent")
+
+            assert await repo.is_period_already_published("daily", start_dt, end_dt) is True
+
+        await engine.dispose()
+
+    asyncio.run(_run())

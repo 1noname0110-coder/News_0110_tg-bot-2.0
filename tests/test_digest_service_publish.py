@@ -427,11 +427,18 @@ async def test_redeliver_digest_skips_already_delivered_chunks() -> None:
                 return None
 
         result = await service.redeliver_digest(bot=_Bot(), session=session, digest_id=digest.id)
+        second_result = await service.redeliver_digest(bot=_Bot(), session=session, digest_id=digest.id)
+
+        attempts = await repo.get_delivery_attempts_by_digest(digest.id)
 
         assert result["status"] == "sent"
         assert result["skipped_chunks"] == [1]
         assert result["sent_chunks"] == 2
         assert len(sent_texts) == 1
         assert "2/2" in sent_texts[0]
+        assert second_result["status"] == "sent"
+        assert second_result["skipped_chunks"] == [1, 2]
+        assert second_result["sent_chunks"] == 2
+        assert len([a for a in attempts if a.status == "success" and a.chunk_idx == 1]) == 1
 
     await engine.dispose()
