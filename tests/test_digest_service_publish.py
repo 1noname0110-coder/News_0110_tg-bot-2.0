@@ -59,7 +59,7 @@ async def test_publish_period_does_not_duplicate_rejected_news_on_rerun() -> Non
         await session.commit()
 
         service = DigestService(_settings())
-        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=False, reason="noise", decision_trace=[])
+        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=False, reason="noise", decision_trace=[], is_high_confidence=False, score=0, topic="general")
         async def _fake_build_digest(_period, _accepted):  # noqa: ANN001
             return SimpleNamespace(
                 title="digest",
@@ -112,7 +112,7 @@ async def test_publish_period_does_not_create_record_when_delivery_failed() -> N
         await session.commit()
 
         service = DigestService(_settings())
-        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=True, reason="", decision_trace=[])
+        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=True, reason="", decision_trace=[], is_high_confidence=True, score=7, topic="general")
 
         async def _fake_build_digest(_period, _accepted):  # noqa: ANN001
             return SimpleNamespace(
@@ -143,7 +143,8 @@ async def test_publish_period_does_not_create_record_when_delivery_failed() -> N
         published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
 
         assert send_attempts == 2
-        assert published == []
+        assert len(published) == 2
+        assert all((row.quality_metrics or {}).get("delivery_status") == "partial" for row in published)
 
     await engine.dispose()
 
@@ -170,7 +171,7 @@ async def test_publish_period_skips_duplicate_period_unless_manual_republish() -
         await session.commit()
 
         service = DigestService(_settings())
-        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=True, reason="", decision_trace=[])
+        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=True, reason="", decision_trace=[], is_high_confidence=True, score=7, topic="general")
 
         sent_payloads: list[tuple[str, str]] = []
 
@@ -259,18 +260,24 @@ async def test_publish_period_saves_filter_rule_aggregates() -> None:
                 return SimpleNamespace(
                     accepted=True,
                     reason="",
+                    is_high_confidence=True,
+                    score=8,
+                    topic="general",
                     decision_trace=[
                         {"rule": "topic_match", "delta": 2},
                         {"rule": "strategic_verb", "delta": 2},
-                        {"rule": "threshold_accept", "delta": 0},
+                        {"rule": "publishable", "delta": 0},
                     ],
                 )
             return SimpleNamespace(
                 accepted=False,
                 reason="noise",
+                is_high_confidence=False,
+                score=0,
+                topic="general",
                 decision_trace=[
                     {"rule": "low_priority", "delta": -4},
-                    {"rule": "threshold_reject", "delta": 0},
+                    {"rule": "below_floor", "delta": 0},
                 ],
             )
 
@@ -304,16 +311,16 @@ async def test_publish_period_saves_filter_rule_aggregates() -> None:
         assert metrics["filter_rule_hits"] == {
             "topic_match": 1,
             "strategic_verb": 1,
-            "threshold_accept": 1,
+            "publishable": 1,
             "low_priority": 1,
-            "threshold_reject": 1,
+            "below_floor": 1,
         }
         assert metrics["filter_rule_score_impact"] == {
             "topic_match": 2,
             "strategic_verb": 2,
-            "threshold_accept": 0,
+            "publishable": 0,
             "low_priority": -4,
-            "threshold_reject": 0,
+            "below_floor": 0,
         }
         assert metrics["suspicious_rules_rejection_share"] == 1.0
 

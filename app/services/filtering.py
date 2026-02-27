@@ -14,6 +14,7 @@ class FilterResult:
     reason: str
     score: int
     topic: str
+    is_high_confidence: bool
     decision_trace: list[dict[str, Any]]
 
 
@@ -175,37 +176,24 @@ class NewsFilter:
             for pattern in self.compiled_conflict_tactical_patterns:
                 if pattern.search(text):
                     self._add_trace(decision_trace, "conflict_tactical", 0, pattern=pattern.pattern, topic=topic)
-                    return FilterResult(False, "тактические детали конфликта", score, topic, decision_trace)
+                    return FilterResult(False, "тактические детали конфликта", score, topic, False, decision_trace)
 
-        primary_passed = (
-            score >= self.profile_rules["primary_score_min"]
-            and topic_scores[topic] >= self.profile_rules["primary_topic_min"]
-            and (not self.profile_rules["primary_requires_strategic"] or strategic_verb_found)
+        is_high_confidence = (
+            score >= self.profile_rules["high_confidence_score_min"]
+            and topic_scores[topic] >= self.profile_rules["high_confidence_topic_min"]
+            and (not self.profile_rules["high_confidence_requires_strategic"] or strategic_verb_found)
         )
-        fallback_passed = (
-            score >= self.profile_rules["fallback_score_min"]
-            and topic_scores[topic] >= self.profile_rules["fallback_topic_min"]
-        )
-
-        if primary_passed or fallback_passed:
-            decision_trace.append(
-                {
-                    "rule": "threshold_accept",
-                    "delta": 0,
-                    "profile": self.threshold_profile,
-                    "primary_passed": primary_passed,
-                    "fallback_passed": fallback_passed,
-                }
-            )
-            return FilterResult(True, "релевантно", score, topic, decision_trace)
-
+        is_publishable = score >= self.profile_rules["publish_floor_score"]
+        if is_high_confidence:
+            decision_trace.append({"rule": "high_confidence", "delta": 0, "profile": self.threshold_profile})
+        if is_publishable:
+            decision_trace.append({"rule": "publishable", "delta": 0, "profile": self.threshold_profile})
+            return FilterResult(True, "релевантно", score, topic, is_high_confidence, decision_trace)
         decision_trace.append(
             {
-                "rule": "threshold_reject",
+                "rule": "below_floor",
                 "delta": 0,
                 "profile": self.threshold_profile,
-                "primary_passed": primary_passed,
-                "fallback_passed": fallback_passed,
             }
         )
-        return FilterResult(False, "низкая стратегическая значимость", score, topic, decision_trace)
+        return FilterResult(True, "низкий приоритет", score, topic, is_high_confidence, decision_trace)
