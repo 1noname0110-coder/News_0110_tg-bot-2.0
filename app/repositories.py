@@ -637,6 +637,8 @@ class NewsRepository:
         removed_as_duplicates = 0
         removed_by_topic_limit = 0
         published_items = 0
+        selected_primary = 0
+        selected_fallback = 0
         topic_distribution: Counter[str] = Counter()
         rejection_reasons: Counter[str] = Counter(rejected_reason_counts or {})
 
@@ -650,10 +652,13 @@ class NewsRepository:
             removed_as_duplicates += int(qm.get("removed_as_duplicates", qm.get("duplicates_removed", 0)))
             removed_by_topic_limit += int(qm.get("removed_by_topic_limit", 0))
             published_items += int(qm.get("published_items", qm.get("selected", 0)))
+            selected_primary += int(qm.get("selected_primary", qm.get("selected_base_pass", qm.get("selected", 0))))
+            selected_fallback += int(qm.get("selected_fallback", 0))
             for topic, count in (row.topic_breakdown or {}).items():
                 topic_distribution[str(topic)] += int(count)
 
         acceptance_rate = 0.0 if raw_count == 0 else round((raw_count - rejected_count) / raw_count, 4)
+        fallback_share = 0.0 if selected == 0 else round(selected_fallback / selected, 4)
         return {
             "raw_total": raw_count,
             "rejected_total": rejected_count,
@@ -665,6 +670,9 @@ class NewsRepository:
             "removed_as_duplicates_total": removed_as_duplicates,
             "removed_by_topic_limit_total": removed_by_topic_limit,
             "published_items_total": published_items,
+            "selected_primary_total": selected_primary,
+            "selected_fallback_total": selected_fallback,
+            "selected_fallback_share": fallback_share,
             "acceptance_rate": acceptance_rate,
             "topic_distribution": dict(topic_distribution),
             "rejection_reasons": dict(rejection_reasons),
