@@ -92,7 +92,7 @@ async def test_publish_period_does_not_duplicate_rejected_news_on_rerun() -> Non
 
 
 @pytest.mark.asyncio
-async def test_publish_period_partial_delivery_is_not_duplicated_on_retry() -> None:
+async def test_publish_period_partial_delivery_allows_next_publish_attempt() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -143,9 +143,9 @@ async def test_publish_period_partial_delivery_is_not_duplicated_on_retry() -> N
 
         published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
 
-        assert send_attempts == 1
-        assert len(published) == 1
-        assert (published[0].quality_metrics or {}).get("delivery_status") == "partial"
+        assert send_attempts == 2
+        assert len(published) == 2
+        assert all((row.quality_metrics or {}).get("delivery_status") == "partial" for row in published)
 
     await engine.dispose()
 
@@ -391,6 +391,60 @@ async def test_send_digest_messages_partial_success_marks_failed_chunks() -> Non
         assert attempts[0].status == "attempt"
         assert attempts[1].status == "failed"
         assert attempts[1].chunk_idx == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_partial_then_redeliver_transitions_digest_to_sent() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    Session = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with Session() as session:
+        repo = NewsRepository(session, timezone="UTC")
+        digest = await repo.publish_digest(
+            period_type="daily",
+            period_start=datetime(2026, 1, 1, 0, 0, 0),
+            period_end=datetime(2026, 1, 2, 0, 0, 0),
+            title="digest",
+            body="part1\n\npart2",
+            items_count=2,
+            source_breakdown={"1": 2},
+            topic_breakdown={"general": 2},
+            quality_metrics={"delivery_status": "partial"},
+            status="partial",
+        )
+        await repo.add_delivery_attempt(digest_id=digest.id, chunk_idx=1, status="success")
+        await repo.add_delivery_attempt(digest_id=digest.id, chunk_idx=2, status="failed")
+
+        service = DigestService(_settings())
+        service._split_body = lambda _body: ["part1", "part2"]
+
+        sent_texts: list[str] = []
+
+        class _Bot:
+            async def send_message(self, chat_id, text):  # noqa: ANN001
+                sent_texts.append(text)
+                return None
+
+        result = await service.redeliver_digest(bot=_Bot(), session=session, digest_id=digest.id)
+        refreshed = await repo.get_published_digest(digest.id)
+        attempts = await repo.get_delivery_attempts_by_digest(digest.id)
+
+        assert result["status"] == "sent"
+        assert result["skipped_chunks"] == [1]
+        assert result["failed_chunks"] == []
+        assert result["sent_chunks"] == 2
+        assert len(sent_texts) == 1
+        assert "2/2" in sent_texts[0]
+        assert refreshed is not None
+        assert refreshed.status == "sent"
+        assert (refreshed.quality_metrics or {}).get("delivery_status") == "sent"
+        assert len([a for a in attempts if a.status == "success" and a.chunk_idx == 1]) == 1
+        assert len([a for a in attempts if a.status == "success" and a.chunk_idx == 2]) == 1
 
     await engine.dispose()
 
