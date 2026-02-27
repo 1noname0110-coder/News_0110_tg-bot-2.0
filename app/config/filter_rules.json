@@ -50,8 +50,8 @@
     "official_entities": 2,
     "event_scale": 2,
     "strategic_verb": 2,
-    "locality_penalty": -4,
-    "clickbait_penalty": -2,
+    "locality_penalty": -5,
+    "clickbait_penalty": -3,
     "stop_pattern": -3,
     "source_trust_factor": 4
   },
@@ -64,9 +64,9 @@
       "fallback_topic_min": 6
     },
     "balanced": {
-      "primary_score_min": 4,
+      "primary_score_min": 5,
       "primary_topic_min": 2,
-      "primary_requires_strategic": true,
+      "primary_requires_strategic": false,
       "fallback_score_min": 5,
       "fallback_topic_min": 4
     },
