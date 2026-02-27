@@ -25,6 +25,7 @@ from app.periods import get_calendar_day_bounds, get_calendar_week_bounds
 from app.repositories import NewsRepository, SourceRepository, source_trust_coefficient
 from app.services.collector import NewsCollector
 from app.services.filtering import FilterResult, NewsFilter
+from app.services.pipeline import RankedNewsItem
 from app.services.summarizer import DigestSummarizer
 
 logger = logging.getLogger(__name__)
@@ -201,11 +202,11 @@ class DigestService:
             )
             return
 
-        period_limit = self.settings.max_period_news_daily if period_type == "daily" else self.settings.max_period_news_weekly
+        period_limit = self.settings.max_period_news
         sources = await SourceRepository(session).list_active()
         source_map = {source.id: source for source in sources}
         raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
-        accepted: list[tuple[RawNews, FilterResult]] = []
+        ranked_items: list[RankedNewsItem] = []
         reject_entries: list[tuple[int, int, str]] = []
         rejection_reasons = Counter()
         filter_rule_hits = Counter()
@@ -221,9 +222,7 @@ class DigestService:
                 filter_rule_hits[rule] += 1
                 filter_rule_score_impact[rule] += int(trace_entry.get("delta", 0))
 
-            if result.accepted:
-                accepted.append((item, result))
-            else:
+            if not result.accepted:
                 rejection_reasons[result.reason] += 1
                 reject_entries.append((item.id, item.source_id, result.reason))
                 has_suspicious_rule = any(
@@ -232,19 +231,37 @@ class DigestService:
                 )
                 if has_suspicious_rule:
                     suspicious_rejections += 1
+                continue
+
+            dedup_exact_key = f"{item.source_id}:{item.external_id or ''}:{item.url or ''}"
+            similarity_key = self.summarizer._normalize(f"{item.title} {item.summary[:180]}")
+            ranked_items.append(
+                RankedNewsItem(
+                    raw=item,
+                    score=result.score,
+                    topic=result.topic,
+                    accepted=result.accepted,
+                    reason=result.reason,
+                    decision_trace=result.decision_trace,
+                    is_high_confidence=result.is_high_confidence,
+                    publish_priority=2 if result.is_high_confidence else 1,
+                    dedup_exact_key=dedup_exact_key,
+                    dedup_similarity_key=similarity_key,
+                )
+            )
 
         await news_repo.reject_many(reject_entries)
 
-        digest = await self.summarizer.build_digest(period_type, accepted)
+        digest = await self.summarizer.build_digest(period_type, ranked_items)
         quality_metrics = dict(digest.quality_metrics)
         quality_metrics["fetched_from_db"] = len(raw_items)
-        quality_metrics["rejected_by_filter"] = len(raw_items) - len(accepted)
+        quality_metrics["rejected_by_filter"] = len(raw_items) - len(ranked_items)
         quality_metrics["removed_as_duplicates"] = int(digest.quality_metrics.get("duplicates_removed", 0))
         quality_metrics["removed_by_topic_limit"] = int(digest.quality_metrics.get("removed_by_topic_limit", 0))
         quality_metrics["published_items"] = digest.items_count
         quality_metrics["raw_total"] = len(raw_items)
-        quality_metrics["accepted_total"] = int(digest.quality_metrics.get("accepted_before_dedup", len(accepted)))
-        quality_metrics["rejected_total"] = len(raw_items) - len(accepted)
+        quality_metrics["accepted_total"] = int(digest.quality_metrics.get("accepted_before_dedup", len(ranked_items)))
+        quality_metrics["rejected_total"] = len(raw_items) - len(ranked_items)
         quality_metrics["rejection_reasons"] = dict(rejection_reasons)
         quality_metrics["filter_rule_hits"] = dict(filter_rule_hits)
         quality_metrics["filter_rule_score_impact"] = dict(filter_rule_score_impact)
@@ -252,21 +269,8 @@ class DigestService:
             suspicious_rejections / quality_metrics["rejected_total"] if quality_metrics["rejected_total"] else 0.0
         )
 
-        send_result = await self._send_digest_messages(bot, digest.title, digest.body, news_repo=news_repo, digest_id=None)
-        quality_metrics["delivery"] = send_result
-
-        delivery_success = send_result.get("status") == "success" and int(send_result.get("sent_chunks", 0)) > 0
-        if not delivery_success:
-            logger.error(
-                "Публикация дайджеста отменена: доставка неуспешна period_type=%s period_start=%s period_end=%s send_result=%s",
-                period_type,
-                start_dt,
-                end_dt,
-                send_result,
-            )
-            return
-
-        await news_repo.publish_digest(
+        quality_metrics["delivery_status"] = "prepared"
+        prepared = await news_repo.publish_digest(
             period_type=period_type,
             period_start=start_dt,
             period_end=end_dt,
@@ -276,6 +280,21 @@ class DigestService:
             source_breakdown=digest.source_breakdown,
             topic_breakdown=digest.topic_breakdown,
             quality_metrics=quality_metrics,
+        )
+
+        send_result = await self._send_digest_messages(
+            bot,
+            digest.title,
+            digest.body,
+            news_repo=news_repo,
+            digest_id=prepared.id,
+        )
+        quality_metrics["delivery"] = send_result
+        quality_metrics["delivery_status"] = "published" if send_result.get("status") == "success" else "partial"
+        await news_repo.update_digest_delivery(
+            prepared.id,
+            delivery_status=quality_metrics["delivery_status"],
+            delivery_payload=send_result,
         )
 
     async def _send_digest_messages(

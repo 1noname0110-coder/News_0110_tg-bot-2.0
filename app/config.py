@@ -30,20 +30,13 @@ class Settings(BaseSettings):
 
     fetch_timeout_seconds: int = Field(default=20, alias="FETCH_TIMEOUT_SECONDS")
 
-    dedup_similarity_threshold: float = Field(default=0.82, alias="DEDUP_SIMILARITY_THRESHOLD")
-    dedup_similarity_threshold_same_source: float | None = Field(
-        default=None,
-        alias="DEDUP_SIMILARITY_THRESHOLD_SAME_SOURCE",
-    )
-    dedup_similarity_threshold_cross_source: float | None = Field(
-        default=0.90,
-        alias="DEDUP_SIMILARITY_THRESHOLD_CROSS_SOURCE",
-    )
-    per_topic_limit_daily: int = Field(default=4, alias="PER_TOPIC_LIMIT_DAILY")
-    per_topic_limit_weekly: int = Field(default=4, alias="PER_TOPIC_LIMIT_WEEKLY")
-    publish_all_important: bool = Field(default=True, alias="PUBLISH_ALL_IMPORTANT")
-    max_period_news_daily: int = Field(default=350, alias="MAX_PERIOD_NEWS_DAILY")
-    max_period_news_weekly: int = Field(default=800, alias="MAX_PERIOD_NEWS_WEEKLY")
+    min_publish_score: int = Field(default=2, alias="MIN_PUBLISH_SCORE")
+    high_confidence_min_count_daily: int = Field(default=5, alias="HIGH_CONFIDENCE_MIN_COUNT_DAILY")
+    high_confidence_min_count_weekly: int = Field(default=7, alias="HIGH_CONFIDENCE_MIN_COUNT_WEEKLY")
+    dedup_threshold_same_source: float = Field(default=0.84, alias="DEDUP_THRESHOLD_SAME_SOURCE")
+    dedup_threshold_cross_source: float = Field(default=0.92, alias="DEDUP_THRESHOLD_CROSS_SOURCE")
+    per_topic_limit: int = Field(default=4, alias="PER_TOPIC_LIMIT")
+    max_period_news: int = Field(default=500, alias="MAX_PERIOD_NEWS")
     filter_threshold_profile: str = Field(default="balanced", alias="FILTER_THRESHOLD_PROFILE")
 
     @model_validator(mode="before")

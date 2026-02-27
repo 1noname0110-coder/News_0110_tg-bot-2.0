@@ -50,8 +50,7 @@ def test_has_default_period_news_limits() -> None:
     settings = Settings.model_validate(
         {"BOT_TOKEN": "token", "CHANNEL_ID": "-1001234567890", "ADMIN_USER_IDS": "12345"}
     )
-    assert settings.max_period_news_daily == 350
-    assert settings.max_period_news_weekly == 800
+    assert settings.max_period_news == 500
 
 
 def test_accepts_custom_period_news_limits() -> None:
@@ -60,12 +59,10 @@ def test_accepts_custom_period_news_limits() -> None:
             "BOT_TOKEN": "token",
             "CHANNEL_ID": "-1001234567890",
             "ADMIN_USER_IDS": "12345",
-            "MAX_PERIOD_NEWS_DAILY": "120",
-            "MAX_PERIOD_NEWS_WEEKLY": "240",
+            "MAX_PERIOD_NEWS": "240",
         }
     )
-    assert settings.max_period_news_daily == 120
-    assert settings.max_period_news_weekly == 240
+    assert settings.max_period_news == 240
 
 
 def test_parses_admin_ids_with_empty_values() -> None:

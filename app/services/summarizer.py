@@ -14,8 +14,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError, field_validator
 
 from app.config import Settings
-from app.models import RawNews
-from app.services.filtering import FilterResult
+from app.services.pipeline import RankedNewsItem
 
 
 logger = logging.getLogger(__name__)
@@ -74,7 +73,7 @@ class DigestSummarizer:
         if settings.llm_enabled and settings.llm_api_key:
             self.client = AsyncOpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
 
-    async def build_digest(self, period_type: str, news: list[tuple[RawNews, FilterResult]]) -> DigestOutput:
+    async def build_digest(self, period_type: str, news: list[RankedNewsItem]) -> DigestOutput:
         if not news:
             title = "Сводка: значимых событий не выявлено"
             return DigestOutput(
@@ -98,7 +97,7 @@ class DigestSummarizer:
                 },
             )
 
-        source_breakdown = Counter(str(item.source_id) for item, _result in news)
+        source_breakdown = Counter(str(entry.raw.source_id) for entry in news)
 
         if self.client:
             generated: dict[str, Any] | None = None
@@ -133,10 +132,10 @@ class DigestSummarizer:
 
         return self._build_extractive(period_type, news, dict(source_breakdown))
 
-    async def _build_with_llm(self, period_type: str, news: list[tuple[RawNews, FilterResult]]) -> dict[str, Any] | None:
+    async def _build_with_llm(self, period_type: str, news: list[RankedNewsItem]) -> dict[str, Any] | None:
         limit = 15 if period_type == "weekly" else 12
         prompt_items = "\n".join(
-            [f"- {item.title}. {item.summary[:350]} (источник {item.source_id})" for item, _result in news[:80]]
+            [f"- {entry.raw.title}. {entry.raw.summary[:350]} (источник {entry.raw.source_id})" for entry in news[:80]]
         )
         system = (
             "Ты редактор сухой аналитической сводки. Пиши только факты, без эмоций, пропаганды и кликбейта. "
@@ -159,7 +158,7 @@ class DigestSummarizer:
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         )
         content = response.choices[0].message.content or ""
-        allowed_urls = {item.url.strip() for item, _result in news if item.url.strip()}
+        allowed_urls = {entry.raw.url.strip() for entry in news if entry.raw.url.strip()}
         parsed, reason = self._parse_llm_response(period_type, content, limit, allowed_urls)
         if parsed is None:
             logger.warning("LLM JSON validation failed: %s", reason)
@@ -220,89 +219,72 @@ class DigestSummarizer:
     def _build_extractive(
         self,
         period_type: str,
-        news: list[tuple[RawNews, FilterResult]],
+        news: list[RankedNewsItem],
         source_breakdown: dict[str, int],
     ) -> DigestOutput:
         default_cap = 12 if period_type == "daily" else 15
         min_items = 5 if period_type == "daily" else 7
-        publish_all_important = self.settings.publish_all_important
-        per_topic_limit = self.settings.per_topic_limit_daily if period_type == "daily" else self.settings.per_topic_limit_weekly
+        per_topic_limit = self.settings.per_topic_limit
 
         deduped = self._deduplicate(news)
-
         ranked = sorted(
             deduped,
-            key=lambda item: (item[1].score, len(item[0].summary), item[0].published_at),
+            key=lambda item: (item.publish_priority, item.score, len(item.raw.summary), item.raw.published_at),
             reverse=True,
         )
-        cap = default_cap
-        if publish_all_important:
-            cap = len(ranked)
+        cap = min(default_cap, len(ranked))
 
         topic_count: dict[str, int] = defaultdict(int)
-        selected: list[tuple[RawNews, str]] = []
+        selected: list[RankedNewsItem] = []
         selected_ids: set[int] = set()
         removed_by_topic_limit = 0
-        selected_in_base_pass = 0
-        selected_in_fallback_wave2 = 0
-        selected_in_fallback_wave3 = 0
 
-        max_score = ranked[0][1].score if ranked else 0
-        fallback_wave2_min_score = max(0, int(max_score * self._EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO))
-        fallback_wave3_min_score = max(0, int(max_score * self._EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO))
+        high_confidence_required = (
+            self.settings.high_confidence_min_count_daily
+            if period_type == "daily"
+            else self.settings.high_confidence_min_count_weekly
+        )
 
-        for item, result in ranked:
-            if item.id in selected_ids:
+        for entry in ranked:
+            if len(selected) >= min(cap, high_confidence_required):
+                break
+            if entry.raw.id in selected_ids or not entry.is_high_confidence:
                 continue
-            if topic_count[result.topic] >= per_topic_limit:
+            if topic_count[entry.topic] >= per_topic_limit:
                 removed_by_topic_limit += 1
                 continue
-            selected.append((item, result.topic))
-            selected_ids.add(item.id)
-            topic_count[result.topic] += 1
-            selected_in_base_pass += 1
-            if len(selected) >= cap:
+            selected.append(entry)
+            selected_ids.add(entry.raw.id)
+            topic_count[entry.topic] += 1
+
+        fallback_added = 0
+        fallback_floor = self.settings.min_publish_score
+        for entry in ranked:
+            if len(selected) >= max(min_items, cap):
                 break
-
-        if len(selected) < min_items:
-            for item, result in ranked:
-                if item.id in selected_ids:
-                    continue
-                if result.score < fallback_wave2_min_score:
-                    continue
-                if topic_count[result.topic] >= per_topic_limit:
-                    continue
-                selected.append((item, result.topic))
-                selected_ids.add(item.id)
-                topic_count[result.topic] += 1
-                selected_in_fallback_wave2 += 1
-                if len(selected) >= cap:
-                    break
-
-            if len(selected) < min_items:
-                for item, result in ranked:
-                    if item.id in selected_ids:
-                        continue
-                    if result.score < fallback_wave3_min_score:
-                        continue
-                    selected.append((item, result.topic))
-                    selected_ids.add(item.id)
-                    selected_in_fallback_wave3 += 1
-                    if len(selected) >= min(min_items, len(ranked)):
-                        break
+            if entry.raw.id in selected_ids or entry.score < fallback_floor:
+                continue
+            if topic_count[entry.topic] >= per_topic_limit:
+                removed_by_topic_limit += 1
+                continue
+            selected.append(entry)
+            selected_ids.add(entry.raw.id)
+            topic_count[entry.topic] += 1
+            fallback_added += 1
 
         title = "Итоги дня: политика и экономика" if period_type == "daily" else "Итоги недели: ключевые изменения"
         lines: list[str] = []
         topic_breakdown: Counter[str] = Counter()
 
-        for idx, (item, topic) in enumerate(selected, 1):
-            topic_breakdown[topic] += 1
+        for idx, entry in enumerate(selected, 1):
+            item = entry.raw
+            topic_breakdown[entry.topic] += 1
             snippet = self._make_dry_snippet(item.summary)
             safe_title = html.escape(item.title)
             safe_snippet = html.escape(snippet)
             safe_url = html.escape(item.url, quote=True)
             lines.append(
-                f"{idx}) [{self._topic_ru(topic)}] {safe_title}\n{safe_snippet}\n<a href=\"{safe_url}\">Источник</a>"
+                f"{idx}) [{self._topic_ru(entry.topic)}] {safe_title}\n{safe_snippet}\n<a href=\"{safe_url}\">Источник</a>"
             )
 
         return DigestOutput(
@@ -315,65 +297,33 @@ class DigestSummarizer:
                 "accepted_before_dedup": len(news),
                 "deduplicated": len(deduped),
                 "selected": len(selected),
-                "selected_base_pass": selected_in_base_pass,
-                "selected_fallback": selected_in_fallback_wave2 + selected_in_fallback_wave3,
-                "selected_fallback_wave2": selected_in_fallback_wave2,
-                "selected_fallback_wave3": selected_in_fallback_wave3,
+                "selected_base_pass": len(selected) - fallback_added,
+                "selected_fallback": fallback_added,
                 "duplicates_removed": max(0, len(news) - len(deduped)),
                 "removed_by_topic_limit": removed_by_topic_limit,
-                "fallback_wave2_min_score": fallback_wave2_min_score,
-                "fallback_wave3_min_score": fallback_wave3_min_score,
             },
         )
 
-    def _deduplicate(self, news: list[tuple[RawNews, FilterResult]]) -> list[tuple[RawNews, FilterResult]]:
-        selected: list[tuple[RawNews, FilterResult]] = []
-        summary_prefix_len = 180
-        for candidate in sorted(news, key=lambda n: (n[0].published_at, len(n[0].summary)), reverse=True):
-            candidate_item = candidate[0]
-            candidate_key = self._dedup_similarity_key(candidate_item, summary_prefix_len)
+    def _deduplicate(self, news: list[RankedNewsItem]) -> list[RankedNewsItem]:
+        selected: list[RankedNewsItem] = []
+        for candidate in sorted(news, key=lambda n: (n.raw.published_at, len(n.raw.summary)), reverse=True):
             duplicate = False
             for existing in selected:
-                existing_item = existing[0]
-                if self._is_exact_duplicate(candidate_item, existing_item):
+                if candidate.dedup_exact_key and candidate.dedup_exact_key == existing.dedup_exact_key:
                     duplicate = True
                     break
-
-                threshold = self._dedup_threshold(candidate_item, existing_item)
-                ratio = SequenceMatcher(
-                    None,
-                    candidate_key,
-                    self._dedup_similarity_key(existing_item, summary_prefix_len),
-                ).ratio()
+                threshold = (
+                    self.settings.dedup_threshold_same_source
+                    if candidate.raw.source_id == existing.raw.source_id
+                    else self.settings.dedup_threshold_cross_source
+                )
+                ratio = SequenceMatcher(None, candidate.dedup_similarity_key, existing.dedup_similarity_key).ratio()
                 if ratio >= threshold:
                     duplicate = True
                     break
             if not duplicate:
                 selected.append(candidate)
         return selected
-
-    def _dedup_similarity_key(self, item: RawNews, summary_prefix_len: int) -> str:
-        title = self._normalize(item.title)
-        summary_prefix = self._normalize(item.summary[:summary_prefix_len])
-        return f"{title} {summary_prefix}".strip()
-
-    def _dedup_threshold(self, candidate: RawNews, existing: RawNews) -> float:
-        base = self.settings.dedup_similarity_threshold
-        same_source_default = min(1.0, base)
-        cross_source_default = min(1.0, max(base, base + 0.08))
-
-        if candidate.source_id == existing.source_id:
-            return self.settings.dedup_similarity_threshold_same_source or same_source_default
-        return self.settings.dedup_similarity_threshold_cross_source or cross_source_default
-
-    def _is_exact_duplicate(self, candidate: RawNews, existing: RawNews) -> bool:
-        if candidate.url and existing.url and candidate.url == existing.url:
-            return True
-        if candidate.external_id and existing.external_id and candidate.external_id == existing.external_id:
-            return True
-        candidate_domain_path = self._domain_path(candidate.url)
-        existing_domain_path = self._domain_path(existing.url)
-        return bool(candidate_domain_path and candidate_domain_path == existing_domain_path)
 
     @staticmethod
     def _domain_path(url: str) -> str:

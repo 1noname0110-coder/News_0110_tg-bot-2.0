@@ -423,20 +423,44 @@ class NewsRepository:
         await self.session.refresh(row)
         return row
 
+
+    async def update_digest_delivery(
+        self,
+        digest_id: int,
+        *,
+        delivery_status: str,
+        delivery_payload: dict,
+    ) -> PublishedNews | None:
+        row = await self.session.get(PublishedNews, digest_id)
+        if row is None:
+            return None
+        quality = dict(row.quality_metrics or {})
+        quality["delivery"] = dict(delivery_payload)
+        quality["delivery_status"] = delivery_status
+        row.quality_metrics = quality
+        await self.session.commit()
+        await self.session.refresh(row)
+        return row
+
     async def is_period_already_published(
         self,
         period_type: str,
         period_start: datetime,
         period_end: datetime,
     ) -> bool:
-        query = select(PublishedNews.id).where(
+        query = select(PublishedNews).where(
             and_(
                 PublishedNews.period_type == period_type,
                 PublishedNews.period_start == period_start,
                 PublishedNews.period_end == period_end,
             )
         )
-        return await self.session.scalar(query) is not None
+        rows = list((await self.session.execute(query)).scalars().all())
+        for row in rows:
+            status = str((row.quality_metrics or {}).get("delivery_status", ""))
+            if status == "published":
+                return True
+        return False
 
     async def compute_daily_stats(self, stat_date: date) -> DailyStats:
         start, end = self._local_period_to_utc_bounds(
