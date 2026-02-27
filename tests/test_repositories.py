@@ -590,7 +590,7 @@ def test_source_trust_coefficient_defaults_and_bounds() -> None:
 
 
 
-def test_is_period_already_published_checks_only_sent_status() -> None:
+def test_is_period_already_published_checks_any_delivery_status() -> None:
     async def _run() -> None:
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         async with engine.begin() as conn:
@@ -616,7 +616,7 @@ def test_is_period_already_published_checks_only_sent_status() -> None:
                 status="partial",
             )
 
-            assert await repo.is_period_already_published("daily", start_dt, end_dt) is False
+            assert await repo.is_period_already_published("daily", start_dt, end_dt) is True
 
             sent_row = await repo.publish_digest(
                 period_type="daily",
