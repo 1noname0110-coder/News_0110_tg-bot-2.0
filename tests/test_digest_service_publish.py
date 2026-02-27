@@ -92,7 +92,7 @@ async def test_publish_period_does_not_duplicate_rejected_news_on_rerun() -> Non
 
 
 @pytest.mark.asyncio
-async def test_publish_period_does_not_create_record_when_delivery_failed() -> None:
+async def test_publish_period_partial_delivery_is_not_duplicated_on_retry() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -143,9 +143,9 @@ async def test_publish_period_does_not_create_record_when_delivery_failed() -> N
 
         published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
 
-        assert send_attempts == 2
-        assert len(published) == 2
-        assert all((row.quality_metrics or {}).get("delivery_status") == "partial" for row in published)
+        assert send_attempts == 1
+        assert len(published) == 1
+        assert (published[0].quality_metrics or {}).get("delivery_status") == "partial"
 
     await engine.dispose()
 

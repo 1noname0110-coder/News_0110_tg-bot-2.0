@@ -516,7 +516,6 @@ class NewsRepository:
                     PublishedNews.period_type == period_type,
                     PublishedNews.period_start == period_start,
                     PublishedNews.period_end == period_end,
-                    PublishedNews.status == DigestDeliveryStatus.SENT.value,
                 )
             )
         )

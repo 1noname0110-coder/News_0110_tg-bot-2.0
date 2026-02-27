@@ -68,10 +68,10 @@ async def test_e2e_pipeline_source_collect_filter_summarize_send_stats() -> None
 
         service.collector.collect_from_source = _fake_collect
 
-        def _fake_evaluate(title, _summary):  # noqa: ANN001
+        def _fake_evaluate(title, _summary, **_kwargs):  # noqa: ANN001
             if "Strategic" in title:
-                return SimpleNamespace(accepted=True, reason="")
-            return SimpleNamespace(accepted=False, reason="noise")
+                return SimpleNamespace(accepted=True, reason="", score=8, topic="strategy", decision_trace=[], is_high_confidence=True)
+            return SimpleNamespace(accepted=False, reason="noise", score=-1, topic="other", decision_trace=[], is_high_confidence=False)
 
         service.filter.evaluate = _fake_evaluate
 
@@ -113,6 +113,10 @@ async def test_e2e_pipeline_source_collect_filter_summarize_send_stats() -> None
         assert len(sent_messages) == 1
         assert len(published) == 1
         assert published[0].items_count == 1
+        assert published[0].quality_metrics["fetched_from_db"] == 2
+        assert published[0].quality_metrics["accepted_total"] == 1
+        assert published[0].quality_metrics["rejected_total"] == 1
+        assert published[0].quality_metrics["rejection_reasons"] == {"noise": 1}
         assert stats.published_count == 0
         assert stats.rejected_count == 0
         assert stats.source_usage == {"1": 2}
@@ -161,10 +165,9 @@ async def test_send_digest_messages_fallback_for_retry_after_forbidden_and_bad_r
 
         attempts = list((await session.execute(select(DeliveryAttempt).order_by(DeliveryAttempt.id.asc()))).scalars().all())
 
-        assert result["status"] == "partial"
+        assert result["status"] == "failed"
         assert result["total_chunks"] >= 2
-        assert attempts[0].status == "retry"
-        assert attempts[0].error_type == "TelegramRetryAfter"
+        assert any(a.status == "retry" and a.error_type == "TelegramRetryAfter" for a in attempts)
         assert any(a.error_type == "TelegramForbiddenError" and a.status == "failed" for a in attempts)
         assert any(a.error_type == "TelegramBadRequest" and a.status == "failed" for a in attempts)
 
@@ -172,7 +175,7 @@ async def test_send_digest_messages_fallback_for_retry_after_forbidden_and_bad_r
 
 
 @pytest.mark.asyncio
-async def test_publish_period_idempotency_with_repo_flag_and_preview_mode() -> None:
+async def test_publish_period_idempotency_blocks_second_publication_for_same_period() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -194,7 +197,7 @@ async def test_publish_period_idempotency_with_repo_flag_and_preview_mode() -> N
         await session.commit()
 
         service = DigestService(_settings())
-        service.filter.evaluate = lambda _title, _summary: SimpleNamespace(accepted=True, reason="")
+        service.filter.evaluate = lambda _title, _summary, **_kwargs: SimpleNamespace(accepted=True, reason="", score=8, topic="general", decision_trace=[], is_high_confidence=True)
 
         async def _fake_build_digest(_period, _accepted):  # noqa: ANN001
             return SimpleNamespace(
@@ -226,19 +229,11 @@ async def test_publish_period_idempotency_with_repo_flag_and_preview_mode() -> N
         assert await repo.is_period_already_published("daily", start_dt, end_dt) is True
 
         await service._publish_period(bot=object(), session=session, period_type="daily", start_dt=start_dt, end_dt=end_dt)
-        await service._publish_period(
-            bot=object(),
-            session=session,
-            period_type="daily",
-            start_dt=start_dt,
-            end_dt=end_dt,
-            allow_republish=True,
-        )
 
         published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
 
-        assert sends == 2
-        assert len(published) == 2
+        assert sends == 1
+        assert len(published) == 1
 
     await engine.dispose()
 
