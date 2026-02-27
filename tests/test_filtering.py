@@ -113,16 +113,27 @@ def test_rejects_local_noise() -> None:
     assert any(entry["rule"] == "low_priority" for entry in result.decision_trace)
 
 
-def test_rejects_tactical_conflict_details() -> None:
+def test_conflict_tactical_details_reduce_score_but_are_not_hard_blocked() -> None:
     f = NewsFilter()
     result = f.evaluate(
         "Конфликт продолжается",
         "Сообщается, сколько уничтожено техники на линии соприкосновения.",
     )
+    assert result.accepted
+    assert result.topic == "conflict"
+    assert any(entry["rule"] == "conflict_tactical_penalty" for entry in result.decision_trace)
+
+
+def test_rejects_conflict_hard_block() -> None:
+    f = NewsFilter()
+    result = f.evaluate(
+        "Конфликт продолжается",
+        "Сообщают, что применено оружие массового поражения и началась новая эскалация.",
+    )
     assert not result.accepted
     assert "тактические детали" in result.reason
     assert result.topic == "conflict"
-    assert any(entry["rule"] == "conflict_tactical" for entry in result.decision_trace)
+    assert any(entry["rule"] == "conflict_hard_block" for entry in result.decision_trace)
 
 
 def test_rejects_lifestyle_news() -> None:

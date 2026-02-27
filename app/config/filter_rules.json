@@ -154,15 +154,16 @@
     "скандал"
   ],
   "weights": {
-    "topic_signal": 2,
+    "topic_signal": 3,
     "topic_boundary": 1,
-    "official_entities": 2,
-    "event_scale": 2,
-    "strategic_verb": 2,
+    "official_entities": 3,
+    "event_scale": 3,
+    "strategic_verb": 3,
     "locality_penalty": -5,
-    "clickbait_penalty": -3,
-    "stop_pattern": -3,
-    "source_trust_factor": 4
+    "clickbait_penalty": -4,
+    "stop_pattern": -4,
+    "source_trust_factor": 3,
+    "conflict_tactical_penalty": -6
   },
   "threshold_profiles": {
     "strict": {
@@ -183,5 +184,10 @@
       "high_confidence_requires_strategic": false,
       "publish_floor_score": 1
     }
-  }
+  },
+  "conflict_hard_block_patterns": [
+    "ядерн[а-я ]*(удар|эскалац)",
+    "применен[аоы]? [а-я ]*оружи[ея] массового поражения",
+    "прорыв [а-я ]*границ[ы]"
+  ]
 }

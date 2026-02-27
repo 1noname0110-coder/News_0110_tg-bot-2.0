@@ -47,6 +47,10 @@ class NewsFilter:
         self.compiled_conflict_tactical_patterns = self._compile_patterns(
             self.rules["conflict_tactical_patterns"], group_name="conflict_tactical_patterns"
         )
+        self.compiled_conflict_hard_block_patterns = self._compile_patterns(
+            self.rules.get("conflict_hard_block_patterns", []),
+            group_name="conflict_hard_block_patterns",
+        )
 
     @classmethod
     def _compile_patterns(cls, patterns: list[str], *, group_name: str) -> list[re.Pattern[str]]:
@@ -175,7 +179,18 @@ class NewsFilter:
         if topic == "conflict":
             for pattern in self.compiled_conflict_tactical_patterns:
                 if pattern.search(text):
-                    self._add_trace(decision_trace, "conflict_tactical", 0, pattern=pattern.pattern, topic=topic)
+                    score += weights["conflict_tactical_penalty"]
+                    self._add_trace(
+                        decision_trace,
+                        "conflict_tactical_penalty",
+                        weights["conflict_tactical_penalty"],
+                        pattern=pattern.pattern,
+                        topic=topic,
+                    )
+
+            for pattern in self.compiled_conflict_hard_block_patterns:
+                if pattern.search(text):
+                    self._add_trace(decision_trace, "conflict_hard_block", 0, pattern=pattern.pattern, topic=topic)
                     return FilterResult(False, "тактические детали конфликта", score, topic, False, decision_trace)
 
         is_high_confidence = (

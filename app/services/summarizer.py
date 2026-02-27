@@ -257,12 +257,20 @@ class DigestSummarizer:
             selected_ids.add(entry.raw.id)
             topic_count[entry.topic] += 1
 
-        fallback_added = 0
-        fallback_floor = self.settings.min_publish_score
+        target_count = max(min_items, cap)
+        base_selected_count = len(selected)
+
+        wave2_added = 0
+        wave3_added = 0
+
+        top_score = ranked[0].score if ranked else 0
+        wave2_floor = max(self.settings.min_publish_score, int(round(top_score * self._EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO)))
+        wave3_floor = max(1, int(round(top_score * self._EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO)))
+
         for entry in ranked:
-            if len(selected) >= max(min_items, cap):
+            if len(selected) >= target_count:
                 break
-            if entry.raw.id in selected_ids or entry.score < fallback_floor:
+            if entry.raw.id in selected_ids or entry.score < wave2_floor:
                 continue
             if topic_count[entry.topic] >= per_topic_limit:
                 removed_by_topic_limit += 1
@@ -270,7 +278,20 @@ class DigestSummarizer:
             selected.append(entry)
             selected_ids.add(entry.raw.id)
             topic_count[entry.topic] += 1
-            fallback_added += 1
+            wave2_added += 1
+
+        for entry in ranked:
+            if len(selected) >= min_items:
+                break
+            if entry.raw.id in selected_ids or entry.score < wave3_floor:
+                continue
+            if topic_count[entry.topic] >= per_topic_limit:
+                removed_by_topic_limit += 1
+                continue
+            selected.append(entry)
+            selected_ids.add(entry.raw.id)
+            topic_count[entry.topic] += 1
+            wave3_added += 1
 
         title = "Итоги дня: политика и экономика" if period_type == "daily" else "Итоги недели: ключевые изменения"
         lines: list[str] = []
@@ -297,10 +318,14 @@ class DigestSummarizer:
                 "accepted_before_dedup": len(news),
                 "deduplicated": len(deduped),
                 "selected": len(selected),
-                "selected_base_pass": len(selected) - fallback_added,
-                "selected_fallback": fallback_added,
+                "selected_base_pass": base_selected_count,
+                "selected_fallback": wave2_added + wave3_added,
+                "selected_fallback_wave2": wave2_added,
+                "selected_fallback_wave3": wave3_added,
                 "duplicates_removed": max(0, len(news) - len(deduped)),
                 "removed_by_topic_limit": removed_by_topic_limit,
+                "fallback_wave2_min_score": wave2_floor,
+                "fallback_wave3_min_score": wave3_floor,
             },
         )
 
