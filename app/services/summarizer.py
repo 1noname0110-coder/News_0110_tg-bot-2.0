@@ -69,6 +69,7 @@ class DigestSummarizer:
     _EXTRACTIVE_FALLBACK_WAVE2_SCORE_RATIO = 0.6
     _EXTRACTIVE_FALLBACK_WAVE3_SCORE_RATIO = 0.45
     _EXTRACTIVE_MIN_REFILL_SCORE = 1
+    _SOURCE_LINK_LABEL = "Источник"
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -205,8 +206,16 @@ class DigestSummarizer:
                 return None, f"url not in source news at item {item_number}: {source_url}"
             seen_urls.add(source_url)
 
-            topic_breakdown[self._normalize(topic)] += 1
-            lines.append(self._render_digest_item(item_number, topic=topic, headline=headline, source_url=source_url))
+            normalized_topic = self._normalize(topic)
+            topic_breakdown[normalized_topic] += 1
+            lines.append(
+                self._render_digest_item(
+                    item_number,
+                    topic=self._topic_ru(normalized_topic),
+                    headline=headline,
+                    source_url=source_url,
+                )
+            )
             items.append({"number": item_number, "topic": topic, "headline": headline, "source_url": source_url})
 
         return {
@@ -386,7 +395,7 @@ class DigestSummarizer:
         lines = [f"{item_number}) [{safe_topic}] {safe_headline}"]
         if snippet:
             lines.append(html.escape(snippet))
-        lines.append(f'<a href="{safe_url}">Источник</a>')
+        lines.append(f'<a href="{safe_url}">{DigestSummarizer._SOURCE_LINK_LABEL}</a>')
         return "\n".join(lines)
 
     @classmethod
