@@ -14,7 +14,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError, field_validator
 
 from app.config import Settings
-from app.services.pipeline import RankedNewsItem
+from app.services.pipeline import EvaluatedNewsItem, RankedNewsItem
 
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ class DigestSummarizer:
         if settings.llm_enabled and settings.llm_api_key:
             self.client = AsyncOpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
 
-    async def build_digest(self, period_type: str, news: list[RankedNewsItem]) -> DigestOutput:
+    async def build_digest(self, period_type: str, news: list[EvaluatedNewsItem]) -> DigestOutput:
         if not news:
             title = "Сводка: значимых событий не выявлено"
             return DigestOutput(
@@ -102,11 +102,12 @@ class DigestSummarizer:
             )
 
         source_breakdown = Counter(str(entry.raw.source_id) for entry in news)
+        ranked_news = [entry.to_ranked(self.normalize_text) for entry in news]
 
         if self.client:
             generated: dict[str, Any] | None = None
             try:
-                generated = await self._build_with_llm(period_type, news)
+                generated = await self._build_with_llm(period_type, ranked_news)
             except Exception:
                 logger.exception("LLM summarization failed, falling back to extractive digest")
 
@@ -228,14 +229,15 @@ class DigestSummarizer:
     def _build_extractive(
         self,
         period_type: str,
-        news: list[RankedNewsItem],
+        evaluated_news: list[EvaluatedNewsItem],
         source_breakdown: dict[str, int],
     ) -> DigestOutput:
         default_cap = self._DIGEST_LIMITS.get(period_type, self._DIGEST_LIMITS["daily"])
         min_items = self._DIGEST_MIN_ITEMS.get(period_type, self._DIGEST_MIN_ITEMS["daily"])
         per_topic_limit = self.settings.per_topic_limit
 
-        deduped = self._deduplicate(news)
+        ranked_news = [entry.to_ranked(self.normalize_text) for entry in evaluated_news]
+        deduped = self._deduplicate(ranked_news)
         ranked = sorted(
             deduped,
             key=lambda item: (item.publish_priority, item.score, len(item.raw.summary), item.raw.published_at),
@@ -342,7 +344,7 @@ class DigestSummarizer:
             source_breakdown=source_breakdown,
             topic_breakdown=dict(topic_breakdown),
             quality_metrics={
-                "accepted_before_dedup": len(news),
+                "accepted_before_dedup": len(evaluated_news),
                 "deduplicated": len(deduped),
                 "selected": len(selected),
                 "selected_primary": primary_selected_count,
@@ -350,7 +352,7 @@ class DigestSummarizer:
                 "selected_fallback_wave2": wave2_added,
                 "selected_fallback_wave3": wave3_added,
                 "selected_fallback_min_floor": min_floor_added,
-                "duplicates_removed": max(0, len(news) - len(deduped)),
+                "duplicates_removed": max(0, len(evaluated_news) - len(deduped)),
                 "removed_by_topic_limit": removed_by_topic_limit,
                 "fallback_wave2_min_score": wave2_floor,
                 "fallback_wave3_min_score": wave3_floor,

@@ -24,8 +24,8 @@ from app.models import RawNews
 from app.periods import get_calendar_day_bounds, get_calendar_week_bounds
 from app.repositories import DigestDeliveryStatus, NewsRepository, SourceRepository, source_trust_coefficient
 from app.services.collector import NewsCollector
-from app.services.filtering import FilterResult, NewsFilter
-from app.services.pipeline import RankedNewsItem, attach_filter_result
+from app.services.filtering import NewsFilter
+from app.services.pipeline import EvaluatedNewsItem, attach_filter_result
 from app.services.summarizer import DigestSummarizer
 
 logger = logging.getLogger(__name__)
@@ -226,7 +226,7 @@ class DigestService:
         sources = await SourceRepository(session).list_active()
         source_map = {source.id: source for source in sources}
         raw_items = await news_repo.fetch_period_news(start_dt, end_dt, limit=period_limit)
-        ranked_items: list[RankedNewsItem] = []
+        evaluated_items: list[EvaluatedNewsItem] = []
         reject_entries: list[tuple[int, int, str]] = []
         rejection_reasons = Counter()
         filter_rule_hits = Counter()
@@ -254,26 +254,23 @@ class DigestService:
                     suspicious_rejections += 1
                 continue
 
-            ranked_items.append(
-                RankedNewsItem.from_filter_result(
-                    raw=item,
-                    result=result,
-                    normalize_text=self.summarizer.normalize_text,
-                )
-            )
+            evaluated_items.append(EvaluatedNewsItem(raw=item, filter_result=result))
 
         await news_repo.reject_many(reject_entries)
 
-        digest = await self.summarizer.build_digest(period_type, ranked_items)
+        digest = await self.summarizer.build_digest(period_type, evaluated_items)
         quality_metrics = dict(digest.quality_metrics)
+        accepted_total = int(quality_metrics.get("accepted_before_dedup", len(evaluated_items)))
+        rejected_total = max(0, len(raw_items) - accepted_total)
+
         quality_metrics["fetched_from_db"] = len(raw_items)
-        quality_metrics["rejected_by_filter"] = len(raw_items) - len(ranked_items)
-        quality_metrics["removed_as_duplicates"] = int(digest.quality_metrics.get("duplicates_removed", 0))
-        quality_metrics["removed_by_topic_limit"] = int(digest.quality_metrics.get("removed_by_topic_limit", 0))
-        quality_metrics["published_items"] = digest.items_count
         quality_metrics["raw_total"] = len(raw_items)
-        quality_metrics["accepted_total"] = int(digest.quality_metrics.get("accepted_before_dedup", len(ranked_items)))
-        quality_metrics["rejected_total"] = len(raw_items) - len(ranked_items)
+        quality_metrics["accepted_total"] = accepted_total
+        quality_metrics["rejected_total"] = rejected_total
+        quality_metrics["rejected_by_filter"] = rejected_total
+        quality_metrics["removed_as_duplicates"] = int(quality_metrics.get("duplicates_removed", 0))
+        quality_metrics["removed_by_topic_limit"] = int(quality_metrics.get("removed_by_topic_limit", 0))
+        quality_metrics["published_items"] = digest.items_count
         quality_metrics["rejection_reasons"] = dict(rejection_reasons)
         quality_metrics["filter_rule_hits"] = dict(filter_rule_hits)
         quality_metrics["filter_rule_score_impact"] = dict(filter_rule_score_impact)

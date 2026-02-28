@@ -3,7 +3,7 @@ import re
 import pytest
 
 from app.services.filtering import NewsFilter
-from app.services.pipeline import attach_filter_result, get_attached_filter_result
+from app.services.pipeline import EvaluatedNewsItem, attach_filter_result, get_attached_filter_result
 
 
 def _legacy_evaluate(f: NewsFilter, title: str, summary: str, source_trust: float = 1.0) -> tuple[bool, str, int, str, list[str]]:
@@ -224,3 +224,28 @@ def test_attached_filter_snapshot_matches_evaluation() -> None:
     assert attached.topic == result.topic
     assert attached.reason == result.reason
     assert attached.decision_trace == result.decision_trace
+
+
+def test_evaluated_news_item_to_ranked_preserves_filter_result() -> None:
+    f = NewsFilter("balanced")
+    result = f.evaluate(
+        "Правительство утвердило налоговые изменения",
+        "Новые правила влияют на экспорт и бюджет на следующий год.",
+    )
+
+    class _Raw:
+        id = 7
+        source_id = 3
+        external_id = "ext-7"
+        url = "https://example.com/news/7"
+        title = "Правительство утвердило налоговые изменения"
+        summary = "Новые правила влияют на экспорт и бюджет на следующий год."
+
+    evaluated = EvaluatedNewsItem(raw=_Raw(), filter_result=result)
+    ranked = evaluated.to_ranked(lambda text: text.lower())
+
+    assert ranked.score == result.score
+    assert ranked.topic == result.topic
+    assert ranked.reason == result.reason
+    assert ranked.is_high_confidence == result.is_high_confidence
+
