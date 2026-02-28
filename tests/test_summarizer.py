@@ -4,7 +4,7 @@ import pytest
 
 from app.config import Settings
 from app.models import RawNews
-from app.services.pipeline import RankedNewsItem
+from app.services.pipeline import EvaluatedNewsItem, RankedNewsItem
 from app.services.summarizer import DigestSummarizer
 
 
@@ -16,6 +16,20 @@ def _settings() -> Settings:
             "ADMIN_USER_IDS": "1",
             "LLM_ENABLED": False,
         }
+    )
+
+
+def _evaluated(item: RawNews, *, score: int, topic: str, high: bool = True) -> EvaluatedNewsItem:
+    return EvaluatedNewsItem(
+        raw=item,
+        filter_result=type("FR", (), {
+            "accepted": True,
+            "reason": "релевантно",
+            "score": score,
+            "topic": topic,
+            "decision_trace": [],
+            "is_high_confidence": high,
+        })(),
     )
 
 
@@ -56,7 +70,7 @@ def test_extractive_selection_has_consistent_markup() -> None:
         _ranked(RawNews(id=15, source_id=5, title="Title five", summary="epsilon unique summary", url="https://example.com/5", external_id="5", published_at=base + timedelta(minutes=5)), score=5, topic="politics"),
     ]
 
-    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 6)})
+    digest = s._build_extractive("daily", [_evaluated(i.raw, score=i.score, topic=i.topic, high=i.is_high_confidence) for i in items], {str(i): 1 for i in range(1, 6)})
     assert digest.items_count == 5
     assert digest.quality_metrics["selected"] == 5
     assert digest.body.count("Источник</a>") == 5
@@ -86,7 +100,7 @@ async def test_llm_and_extractive_use_same_link_markup() -> None:
         for i in range(1, 6)
     ]
 
-    digest = await s.build_digest("daily", ranked)
+    digest = await s.build_digest("daily", [_evaluated(i.raw, score=i.score, topic=i.topic, high=i.is_high_confidence) for i in ranked])
     assert digest.items_count == 5
     assert digest.body.count("Источник</a>") == 5
 
@@ -105,7 +119,7 @@ def test_extractive_uses_min_floor_fallback_to_reach_min_items() -> None:
         _ranked(RawNews(id=25, source_id=5, title="E", summary="s5 unique", url="https://example.com/e", external_id="e", published_at=base + timedelta(minutes=5)), score=1, topic="politics", high=False),
     ]
 
-    digest = s._build_extractive("daily", items, {str(i): 1 for i in range(1, 6)})
+    digest = s._build_extractive("daily", [_evaluated(i.raw, score=i.score, topic=i.topic, high=i.is_high_confidence) for i in items], {str(i): 1 for i in range(1, 6)})
 
     assert digest.items_count == 5
     assert digest.quality_metrics["selected_primary"] == 1

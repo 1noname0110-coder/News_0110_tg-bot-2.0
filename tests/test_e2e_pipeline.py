@@ -15,6 +15,7 @@ from app.db import Base
 from app.models import DailyStats, DeliveryAttempt, PublishedNews, RawNews, Source
 from app.repositories import NewsRepository
 from app.services.digest_service import DigestService
+from app.services.pipeline import EvaluatedNewsItem
 
 
 def _settings() -> Settings:
@@ -68,7 +69,11 @@ async def test_e2e_pipeline_source_collect_filter_summarize_send_stats() -> None
 
         service.collector.collect_from_source = _fake_collect
 
+        evaluate_calls = 0
+
         def _fake_evaluate(title, _summary, **_kwargs):  # noqa: ANN001
+            nonlocal evaluate_calls
+            evaluate_calls += 1
             if "Strategic" in title:
                 return SimpleNamespace(accepted=True, reason="", score=8, topic="strategy", decision_trace=[], is_high_confidence=True)
             return SimpleNamespace(accepted=False, reason="noise", score=-1, topic="other", decision_trace=[], is_high_confidence=False)
@@ -78,6 +83,9 @@ async def test_e2e_pipeline_source_collect_filter_summarize_send_stats() -> None
         async def _fake_build_digest(period, accepted):  # noqa: ANN001
             assert period == "daily"
             assert len(accepted) == 1
+            assert isinstance(accepted[0], EvaluatedNewsItem)
+            assert accepted[0].filter_result.score == 8
+            assert accepted[0].filter_result.topic == "strategy"
             return SimpleNamespace(
                 title="Daily digest",
                 body="• <a href='https://example.com/a'>Strategic partnership</a>",
@@ -110,6 +118,7 @@ async def test_e2e_pipeline_source_collect_filter_summarize_send_stats() -> None
         published = list((await session.execute(select(PublishedNews).order_by(PublishedNews.id.asc()))).scalars().all())
 
         assert len(raws) == 2
+        assert evaluate_calls == 2
         assert len(sent_messages) == 1
         assert len(published) == 1
         assert published[0].items_count == 1

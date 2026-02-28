@@ -70,3 +70,16 @@ class RankedNewsItem:
             dedup_exact_key=f"{raw.source_id}:{raw.external_id or ''}:{raw.url or ''}",
             dedup_similarity_key=normalize_text(f"{raw.title} {raw.summary[:180]}"),
         )
+
+
+@dataclass(slots=True)
+class EvaluatedNewsItem:
+    raw: RawNews
+    filter_result: FilterResult
+
+    def to_ranked(self, normalize_text: Callable[[str], str]) -> RankedNewsItem:
+        return RankedNewsItem.from_filter_result(
+            raw=self.raw,
+            result=self.filter_result,
+            normalize_text=normalize_text,
+        )
